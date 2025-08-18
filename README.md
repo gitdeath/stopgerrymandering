@@ -17,15 +17,15 @@ This project solves the complex problem of creating political districts from a s
 To ensure the resulting districts are legally compliant and geometrically sound, the following constraints must be met:
 
 * **Contiguity:** Each district must be a single, unbroken area.
-    * **Explaination:** Every new district has to be one continuous shape on the map, without any disconnected pieces or "islands."
+    * **Explanation:** Every new district has to be one continuous shape on the map, without any disconnected pieces or "islands."
     
 * **Population Parity:** The population of each district must be within ±0.5% of the ideal population, calculated as `P_ideal = (Total Population) / D`.
-    * **Explaination:** The population in each new district must be almost exactly the same. We figure out what the ideal population is by dividing the total population by the number of districts, and then we make sure no district is more than a tiny bit (0.5%) bigger or smaller than that ideal number. This ensures a fair distribution of voters.
+    * **Explanation:** The population in each new district must be almost exactly the same. We figure out what the ideal population is by dividing the total population by the number of districts, and then we make sure no district is more than a tiny bit (0.5%) bigger or smaller than that ideal number. This ensures a fair distribution of voters.
       
 * **Shape Compactness:** To prevent the creation of long, winding districts, each district's shape is measured using the **Polsby-Popper score**. This score is a ratio of a district's area to the square of its perimeter, with a perfect circle having a score of 1. Our solution requires each district to have a score of at least 0.20:
     `PolsbyPopper_d = (4 * pi * Area_d) / (Perimeter_d^2) >= 0.20`
 
-    * **Explaination:** We use a special formula called the Polsby-Popper score to check how "round" or compact a district's shape is. A score of 1 is a perfect circle, which is the most compact shape. A very low score means the district is long and squiggly, which often indicates gerrymandering. We require each district to have a score of at least 0.20, making sure its shape is reasonably tidy and not too stretched out. 
+    * **Explanation:** We use a special formula called the Polsby-Popper score to check how "round" or compact a district's shape is. A score of 1 is a perfect circle, which is the most compact shape. A very low score means the district is long and squiggly, which often indicates gerrymandering. We require each district to have a score of at least 0.20, making sure its shape is reasonably tidy and not too stretched out. 
 ---
 
 ### **Objective**
@@ -63,7 +63,7 @@ First, the algorithm establishes a deterministic sweep order for assigning censu
     * **3: Northwest Sweep** (descending y, descending x)
 * The algorithm then assigns blocks to initial districts by iterating through them in the determined sweep order, merging adjacent blocks until the ideal population is met.
 
-**Explaination:** The process begins by using a predetermined sweeping direction to create the first version of the districts. It draws a box around the entire state and then, based on a unique hash code, decides to sweep from one of the four corners (northeast, southwest, southeast, or northwest). As it sweeps, it adds adjacent census blocks to a district until that district has the correct number of people.
+**Explanation:** The process begins by using a predetermined sweeping direction to create the first version of the districts. It draws a box around the entire state and then, based on a unique hash code, decides to sweep from one of the four corners (northeast, southwest, southeast, or northwest). As it sweeps, it adds adjacent census blocks to a district until that district has the correct number of people.
 
 #### **2. Optimization: Hill-Climbing / Simulated Annealing**
 
@@ -73,7 +73,7 @@ After the initial district assignment, the algorithm refines the boundaries to i
 * At each step, a move (swapping a block) is evaluated. The move is accepted if it reduces the total moment of inertia (`sum J_d`) and does not violate any of the contiguity, population, or Polsby-Popper constraints.
 * This process continues until no further improvements can be made.
 
-**Explaination:** Once the initial districts are formed, the algorithm refines them by using a process that’s like making small improvements. It repeatedly considers moving a single block from one district to a neighboring one. If this move makes the districts more compact and doesn't break any of the population or shape rules, it accepts the change. This continues until no such moves can be made to improve the districts further.
+**Explanation:** Once the initial districts are formed, the algorithm refines them by using a process that’s like making small improvements. It repeatedly considers moving a single block from one district to a neighboring one. If this move makes the districts more compact and doesn't break any of the population or shape rules, it accepts the change. This continues until no such moves can be made to improve the districts further.
 
 #### **3. Tie-Breaker Rules**
 
@@ -83,7 +83,7 @@ To ensure a single, reproducible result even when multiple optimal solutions exi
 2.  **Lexicographical Block ID:** If multiple solutions have the same compactness score, the solution is chosen based on the lexicographical ordering of the block IDs within each district.
 3.  **Lexicographical Centroid Ordering:** If a tie still exists, a final tie-breaker is applied by comparing the lexicographical ordering of the district centroids (sorted by x, then y coordinates).
 
-**Explaination:** These are rules designed to ensure a consistent outcome every time the process is run. If the algorithm finds multiple equally good solutions, a set of rules are applied to decide which one to choose. This includes using a unique digital code (a SHA256 hash) to select the starting sweep direction and then sorting the districts by their block IDs or geographic centers to break any remaining ties.
+**Explanation:** These are rules designed to ensure a consistent outcome every time the process is run. If the algorithm finds multiple equally good solutions, a set of rules are applied to decide which one to choose. This includes using a unique digital code (a SHA256 hash) to select the starting sweep direction and then sorting the districts by their block IDs or geographic centers to break any remaining ties.
 
 ---
 
