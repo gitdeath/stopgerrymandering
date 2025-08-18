@@ -17,7 +17,7 @@ This project solves the complex problem of creating political districts from a s
 To ensure the resulting districts are legally compliant and geometrically sound, the following constraints must be met:
 
 * **Contiguity:** Each district must be a single, unbroken area.
-    * **Explaination:** This just means that every new district has to be one continuous shape on the map, without any disconnected pieces or "islands."
+    * **Explaination:** Every new district has to be one continuous shape on the map, without any disconnected pieces or "islands."
     
 * **Population Parity:** The population of each district must be within ±0.5% of the ideal population, calculated as `P_ideal = (Total Population) / D`.
     * **Explaination:** The population in each new district must be almost exactly the same. We figure out what the ideal population is by dividing the total population by the number of districts, and then we make sure no district is more than a tiny bit (0.5%) bigger or smaller than that ideal number. This ensures a fair distribution of voters.
