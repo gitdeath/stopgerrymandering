@@ -18,7 +18,7 @@ To ensure the resulting districts are legally compliant and geometrically sound,
 
 * **Contiguity:** Each district must be a single, unbroken area.
 * **Population Parity:** The population of each district must be within ±0.5% of the ideal population, calculated as `P_ideal = (Total Population) / D`.
-* **Shape Compactness:** To prevent gerrymandering (the creation of long, winding districts), each district's shape is measured using the **Polsby-Popper score**. This score is a ratio of a district's area to the square of its perimeter, with a perfect circle having a score of 1. Our solution requires each district to have a score of at least 0.20:
+* **Shape Compactness:** To prevent the creation of long, winding districts, each district's shape is measured using the **Polsby-Popper score**. This score is a ratio of a district's area to the square of its perimeter, with a perfect circle having a score of 1. Our solution requires each district to have a score of at least 0.20:
     `PolsbyPopper_d = (4 * pi * Area_d) / (Perimeter_d^2) >= 0.20`
 
 ---
