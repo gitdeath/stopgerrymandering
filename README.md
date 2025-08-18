@@ -7,11 +7,8 @@ This project solves the complex problem of creating political districts from a s
 
 ### **Inputs**
 
-* `census_blocks`: A set of all census blocks within a given state. Each block `i` is defined by:
-    * **Population:** `p_i`
-    * **Coordinates:** `(x_i, y_i)`
-    * **Adjacency List:** A list of adjacent census blocks.
-* `D`: The fixed number of districts required by law.
+* "2020.pl.zip" State File From: https://www2.census.gov/programs-surveys/decennial/2020/data/01-Redistricting_File--PL_94-171/
+* "tabblock20.zip" State File From: https://www2.census.gov/geo/tiger/TIGER2020PL/STATE/
 
 ---
 
@@ -79,3 +76,5 @@ To ensure a single, reproducible result even when multiple optimal solutions exi
 
 * `district_map`: A list of districts, where each district is a set of the block IDs it contains.
 * `final_compactness_score`: The total moment of inertia (`sum J_d`) of the final districting plan.
+
+
