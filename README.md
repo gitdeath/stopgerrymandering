@@ -2,7 +2,6 @@
 
 This project solves the complex problem of creating political districts from a set of census blocks. The goal is to generate districts that are not only compact and fair but also meet strict legal and geometric requirements. This is a common problem in political science and is often referred to as redistricting.
 
-<img src="https://example.com/electoral_map_image.png" alt="Image of US electoral map with districts" width="600">
 
 ---
 
