@@ -2,8 +2,8 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 from shapely.geometry import Polygon
+from shapely.strtree import STRtree
 import hashlib
-from scipy.optimize import dual_annealing
 import pandas as pd
 import os
 import argparse
@@ -172,6 +172,69 @@ def unzip_and_find_files(base_dir, fips, state_code, temp_dir):
     return shapefile, pop_file, geo_file
 
 
+def build_adjacency_graph(gdf, progress_interval=5000):
+    """
+    Builds adjacency graph using an STRtree spatial index for efficiency.
+    Avoids O(n^2) pairwise checks by querying only nearby geometries.
+
+    Args:
+        gdf (GeoDataFrame): GeoDataFrame containing geometry and GEOID20
+        progress_interval (int): how often to log progress (every N geometries)
+
+    Returns:
+        networkx.Graph: adjacency graph where nodes are GEOID20 strings
+    """
+    logging.info("Building adjacency graph with spatial index...")
+
+    G = nx.Graph()
+
+    # Add nodes first with attributes
+    for _, row in gdf.iterrows():
+        G.add_node(
+            row['GEOID20'],
+            pop=int(row['P1_001N']),
+            x=row['x'],
+            y=row['y'],
+            geom=row.geometry,
+        )
+
+    # Use list of geometries and build a mapping from geometry object -> GEOID20
+    # (This is commonly used with shapely STRtree)
+    geoms = list(gdf.geometry.values)
+    geoids = list(gdf['GEOID20'].values)
+    tree = STRtree(geoms)
+
+    # Build mapping from geometry object to GEOID20 (geometry objects are okay as keys in practice)
+    geom_to_geoid = {geom: gid for geom, gid in zip(geoms, geoids)}
+
+    total = len(geoms)
+    for idx, geom in enumerate(geoms):
+        # Log progress occasionally (helps when processing many blocks)
+        if (idx % progress_interval) == 0:
+            logging.info(f"Adjacency: processing geometry {idx}/{total}...")
+
+        # Query only geometries that are spatially near this geom
+        possible_neighbors = tree.query(geom)
+        for nbr in possible_neighbors:
+            # Avoid self
+            if nbr is geom:
+                continue
+            # touches is the precise criterion used previously
+            try:
+                if geom.touches(nbr):
+                    gid1 = geom_to_geoid[geom]
+                    gid2 = geom_to_geoid[nbr]
+                    # add_edge is idempotent; duplicates are ignored
+                    G.add_edge(gid1, gid2)
+            except Exception as ex:
+                # If geometry operation fails for any particular pair, log and continue
+                logging.debug(f"Geometry touch test failed for a pair: {ex}")
+                continue
+
+    logging.info(f"Graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+    return G
+
+
 def load_and_preprocess_data(shapefile_path, pop_file_path, geo_file_path):
     """
     Loads shapefile and population data, merges them, and builds a graph.
@@ -227,28 +290,13 @@ def load_and_preprocess_data(shapefile_path, pop_file_path, geo_file_path):
 
     # Convert population column to integer
     gdf['P1_001N'] = gdf['P1_001N'].astype(int)
-    total_pop = gdf['P1_001N'].sum()
+    total_pop = int(gdf['P1_001N'].sum())
     logging.debug(f"Total state population: {total_pop}")
     logging.info("Data loading complete. Building adjacency graph...")
 
-    # Build the adjacency graph
-    G = nx.Graph()
-    for idx1, row1 in gdf.iterrows():
-        G.add_node(
-            row1['GEOID20'],
-            pop=row1['P1_001N'],
-            x=row1['x'],
-            y=row1['y'],
-            geom=row1.geometry,
-        )
+    # Build the adjacency graph using spatial index (fast)
+    G = build_adjacency_graph(gdf)
 
-    # Add edges for adjacent blocks
-    for i, row1 in gdf.iterrows():
-        for j, row2 in gdf.iterrows():
-            if i < j and row1.geometry.touches(row2.geometry):
-                G.add_edge(row1['GEOID20'], row2['GEOID20'])
-
-    logging.info(f"Graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
     return gdf, G, total_pop
 
 
@@ -372,7 +420,7 @@ def initial_assignment(gdf, G, D, ideal_pop):
         else:
             # Fallback for blocks that don't fit into any valid district.
             # This is non-ideal but necessary to ensure all blocks are assigned.
-            min_pop_idx = np.argmin(pop_per_district)
+            min_pop_idx = int(np.argmin(pop_per_district))
             districts[min_pop_idx].add(block)
             pop_per_district[min_pop_idx] += block_pop
         
@@ -389,16 +437,6 @@ def objective(districts, gdf, G, ideal_pop):
     This function calculates a total score based on population deviation,
     contiguity, compactness (Polsby-Popper), and moment of inertia.
     It returns infinity if any constraints are violated.
-
-    Args:
-        districts (list): A list of sets, each representing a district.
-        gdf (gpd.GeoDataFrame): The GeoDataFrame.
-        G (nx.Graph): The adjacency graph.
-        ideal_pop (int): The target population per district.
-
-    Returns:
-        float: A score representing the quality of the district map.
-               Lower is better.
     """
     total_inertia = 0
     pop_tolerance = ideal_pop * 0.005
@@ -431,7 +469,7 @@ def objective(districts, gdf, G, ideal_pop):
     return total_inertia
 
 
-def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
+def optimize_districts(districts, gdf, G, ideal_pop, D, max_iter=10000, seed=None):
     """
     Optimizes the initial district map using a simulated annealing-like approach.
 
@@ -440,22 +478,31 @@ def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
         gdf (gpd.GeoDataFrame): The GeoDataFrame.
         G (nx.Graph): The adjacency graph.
         ideal_pop (int): The target population per district.
+        D (int): number of districts (used to seed RNG deterministically)
         max_iter (int): The maximum number of optimization iterations.
+        seed (int|None): RNG seed. If None, deterministically derived from GEOIDs + D.
 
     Returns:
         tuple: The optimized district map and its final score.
     """
     logging.info("Step 4 of 5: Optimizing district map...")
-    
-    # Use the number of districts as a seed to ensure repeatable results for the same state
-    np.random.seed(D)
-    
-    def perturb(districts):
+
+    # Create a deterministic seed if none provided: hash(sorted GEOIDs + D)
+    if seed is None:
+        geoids_sorted = ''.join(sorted(gdf['GEOID20'].astype(str).tolist()))
+        seed_hash = hashlib.sha256((geoids_sorted + str(D)).encode()).hexdigest()
+        seed = int(seed_hash, 16) % (2**32)
+    logging.debug(f"Using RNG seed: {seed}")
+    rng = np.random.default_rng(seed)
+    # Also seed numpy's global RNG for compatibility with code using np.random
+    np.random.seed(seed)
+
+    def perturb(districts_local):
         """Generates a new state by swapping one block between two adjacent districts."""
-        new_districts = [set(d) for d in districts]
+        new_districts = [set(d) for d in districts_local]
         
         # Choose two random districts
-        d1_idx, d2_idx = np.random.choice(len(districts), 2, replace=False)
+        d1_idx, d2_idx = rng.choice(len(districts_local), size=2, replace=False)
         
         # Find a block in d1 that is adjacent to d2
         blocks_to_move = [
@@ -464,7 +511,7 @@ def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
         ]
         
         if blocks_to_move:
-            block = np.random.choice(blocks_to_move)
+            block = rng.choice(blocks_to_move)
             new_districts[d1_idx].remove(block)
             new_districts[d2_idx].add(block)
             logging.debug(f"Perturbing map: moved block {block} from district {d1_idx} to {d2_idx}")
@@ -475,7 +522,7 @@ def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
 
     current_districts = districts
     current_score = objective(districts, gdf, G, ideal_pop)
-    best_districts = list(current_districts)
+    best_districts = [set(d) for d in current_districts]
     best_score = current_score
 
     temp, alpha = 1000.0, 0.999 # Annealing schedule
@@ -485,15 +532,27 @@ def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
         new_districts = perturb(current_districts)
         new_score = objective(new_districts, gdf, G, ideal_pop)
 
-        # Calculate acceptance probability
-        if new_score < current_score or np.random.rand() < np.exp((current_score - new_score) / temp):
+        accepted = False
+        # Calculate acceptance probability safely (avoid overflow)
+        if new_score < current_score:
+            accepted = True
+        else:
+            try:
+                prob = np.exp((current_score - new_score) / temp)
+                if rng.random() < prob:
+                    accepted = True
+            except OverflowError:
+                # If overflow occurs, skip acceptance by probability
+                accepted = False
+
+        if accepted:
             current_districts = new_districts
             current_score = new_score
             logging.debug(f"Iteration {i+1}: New score {current_score:.2f} accepted.")
             
             # Update best found solution
             if current_score < best_score:
-                best_districts = list(current_districts)
+                best_districts = [set(d) for d in current_districts]
                 best_score = current_score
                 logging.info(f"Iteration {i+1}: New best score found: {best_score:.2f}")
         else:
@@ -553,9 +612,9 @@ def main():
         # Initial assignment
         initial_districts = initial_assignment(gdf, G, D, ideal_pop)
         
-        # Optimize
+        # Optimize (deterministic seed derived internally)
         final_districts, final_score = optimize_districts(
-            initial_districts, gdf, G, ideal_pop
+            initial_districts, gdf, G, ideal_pop, D, max_iter=10000, seed=None
         )
         
         # Apply tie-breaker
@@ -601,6 +660,7 @@ def main():
             logging.info("Cleaning up temporary files...")
             shutil.rmtree(temp_dir)
             logging.info("Cleanup complete.")
+
 
 if __name__ == "__main__":
     main()
