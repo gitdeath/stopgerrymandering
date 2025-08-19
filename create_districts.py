@@ -452,6 +452,9 @@ def optimize_districts(districts, gdf, G, ideal_pop, max_iter=10000):
     """
     logging.info("Step 4 of 5: Optimizing district map...")
     
+    # Use the number of districts as a seed to ensure repeatable results for the same state
+    np.random.seed(D)
+    
     def perturb(districts):
         """Generates a new state by swapping one block between two adjacent districts."""
         new_districts = [set(d) for d in districts]
