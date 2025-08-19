@@ -91,7 +91,7 @@ To ensure a single, reproducible result, a set of deterministic tie-breaker rule
 * **Optimization Tie-Breaker**: The simulated annealing process is made fully reproducible by **seeding the random number generator** with the number of districts. This ensures that every run of the program for a given state and number of districts will produce the exact same sequence of "random" numbers and, therefore, the same outcome.
 * **Final Output Ordering**: The final output districts are sorted based on their contents to guarantee the final JSON file is consistently formatted.
 
-***
+
 **Explanation:** 
 
 This redistricting program creates a fair and compact map using a consistent, repeatable process.
