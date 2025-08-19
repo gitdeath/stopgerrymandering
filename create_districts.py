@@ -353,30 +353,25 @@ def initial_assignment(gdf, G, D, ideal_pop):
     for i, block in enumerate(sweep_order):
         block_pop = int(G.nodes[block]['pop'])
         
-        # Find the best district to add the block to
-        best_idx = -1
-        min_pop = float('inf')
-        
-        # Iterate through districts to find a suitable one
+        # Find the best district to add the block to, with a deterministic tie-breaker
+        best_candidates = []
         for j in range(D):
             # Check for contiguity and population limit
             is_adjacent = not districts[j] or any(G.has_edge(block, b) for b in districts[j])
             
             if (pop_per_district[j] + block_pop <= ideal_pop + pop_tolerance and
-                is_adjacent and
-                pop_per_district[j] < min_pop):
-                
-                min_pop = pop_per_district[j]
-                best_idx = j
-        
-        if best_idx != -1:
+                is_adjacent):
+                best_candidates.append((pop_per_district[j], j))
+
+        if best_candidates:
+            # Sort candidates by population (ascending) then by district index (ascending)
+            best_candidates.sort()
+            best_idx = best_candidates[0][1]
             districts[best_idx].add(block)
             pop_per_district[best_idx] += block_pop
         else:
-            # If no suitable district found, we need to backtrack or handle this.
-            # For simplicity, this implementation assigns it to the least
-            # populated district even if it breaks contiguity.
-            # The optimization step will fix this.
+            # Fallback for blocks that don't fit into any valid district.
+            # This is non-ideal but necessary to ensure all blocks are assigned.
             min_pop_idx = np.argmin(pop_per_district)
             districts[min_pop_idx].add(block)
             pop_per_district[min_pop_idx] += block_pop
