@@ -1,6 +1,6 @@
 # The Gerrymandering Problem
 
-This project solves the complex problem of creating political districts from a set of census blocks. The goal is to generate districts that are fair by ignoring everything except Population, Compactness, and Continguity - this removes all human bias.
+This project solves the complex problem of creating political districts from a set of census blocks. The goal is to generate districts that are fair by ignoring everything except Population, Compactness, and Contiguity - this removes all human bias.
 
 
 ---
