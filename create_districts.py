@@ -13,6 +13,7 @@ import shutil
 import json
 import logging
 import sys
+import matplotlib.pyplot as plt
 
 # Configure logging to control debug output
 logging.basicConfig(
@@ -20,7 +21,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-
 
 # State metadata: postal code -> (FIPS, state name, congressional districts)
 STATE_METADATA = {
@@ -76,7 +76,6 @@ STATE_METADATA = {
     'WY': ('56', 'Wyoming', 1),
 }
 
-
 def parse_arguments():
     """Parses command-line arguments for state, districts, and debug flag."""
     parser = argparse.ArgumentParser(
@@ -97,14 +96,12 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-
 def setup_logging(debug_mode):
     """Sets the logging level based on the debug flag."""
     if debug_mode:
         logging.getLogger().setLevel(logging.DEBUG)
     else:
         logging.getLogger().setLevel(logging.INFO)
-
 
 def unzip_and_find_files(base_dir, fips, state_code, temp_dir):
     """
@@ -171,7 +168,6 @@ def unzip_and_find_files(base_dir, fips, state_code, temp_dir):
     logging.debug(f"Found geographic header file: {geo_file}")
     return shapefile, pop_file, geo_file
 
-
 def build_adjacency_graph(gdf, progress_interval=5000):
     """
     Builds adjacency graph using an STRtree spatial index for efficiency.
@@ -199,17 +195,16 @@ def build_adjacency_graph(gdf, progress_interval=5000):
         )
 
     # Use list of geometries and build a mapping from geometry object -> GEOID20
-    # (This is commonly used with shapely STRtree)
     geoms = list(gdf.geometry.values)
     geoids = list(gdf['GEOID20'].values)
     tree = STRtree(geoms)
 
-    # Build mapping from geometry object to GEOID20 (geometry objects are okay as keys in practice)
+    # Build mapping from geometry object to GEOID20
     geom_to_geoid = {geom: gid for geom, gid in zip(geoms, geoids)}
 
     total = len(geoms)
     for idx, geom in enumerate(geoms):
-        # Log progress occasionally (helps when processing many blocks)
+        # Log progress occasionally
         if (idx % progress_interval) == 0:
             logging.info(f"Adjacency: processing geometry {idx}/{total}...")
 
@@ -224,16 +219,13 @@ def build_adjacency_graph(gdf, progress_interval=5000):
                 if geom.touches(nbr):
                     gid1 = geom_to_geoid[geom]
                     gid2 = geom_to_geoid[nbr]
-                    # add_edge is idempotent; duplicates are ignored
                     G.add_edge(gid1, gid2)
             except Exception as ex:
-                # If geometry operation fails for any particular pair, log and continue
                 logging.debug(f"Geometry touch test failed for a pair: {ex}")
                 continue
 
     logging.info(f"Graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
     return G
-
 
 def load_and_preprocess_data(shapefile_path, pop_file_path, geo_file_path):
     """
@@ -294,18 +286,14 @@ def load_and_preprocess_data(shapefile_path, pop_file_path, geo_file_path):
     logging.debug(f"Total state population: {total_pop}")
     logging.info("Data loading complete. Building adjacency graph...")
 
-    # Build the adjacency graph using spatial index (fast)
+    # Build the adjacency graph using spatial index
     G = build_adjacency_graph(gdf)
 
     return gdf, G, total_pop
 
-
 def get_sweep_order(gdf):
     """
     Determines a consistent, pseudo-random sweep order for initial assignment.
-
-    The sweep direction is determined by a hash of the sorted GEOID20s,
-    ensuring a deterministic result for a given input dataset.
 
     Args:
         gdf (gpd.GeoDataFrame): The GeoDataFrame of census blocks.
@@ -331,12 +319,9 @@ def get_sweep_order(gdf):
         logging.debug("Sweep order: Northwest")
         return gdf.sort_values(by=['y', 'x'], ascending=[False, False])['GEOID20'].tolist()
 
-
 def compute_inertia(district_blocks, gdf):
     """
     Calculates the moment of inertia for a given set of blocks.
-
-    Lower inertia indicates a more compact, centrally-massed district.
     """
     district_gdf = gdf[gdf['GEOID20'].isin(district_blocks)]
     total_pop = district_gdf['P1_001N'].astype(int).sum()
@@ -352,12 +337,9 @@ def compute_inertia(district_blocks, gdf):
     )
     return inertia
 
-
 def polsby_popper(district_blocks, gdf):
     """
     Calculates the Polsby-Popper score for a district.
-
-    A higher score (closer to 1) indicates a more compact district.
     """
     district_gdf = gdf[gdf['GEOID20'].isin(district_blocks)]
     union_geom = district_gdf.geometry.unary_union
@@ -367,21 +349,14 @@ def polsby_popper(district_blocks, gdf):
         return (4 * np.pi * area) / (perimeter**2) if perimeter > 0 else 0
     return 0
 
-
 def is_contiguous(district_blocks, G):
     """Checks if a set of blocks forms a contiguous district."""
     subgraph = G.subgraph(district_blocks)
     return nx.is_connected(subgraph)
 
-
 def initial_assignment(gdf, G, D, ideal_pop):
     """
     Performs an initial assignment of blocks to districts using a greedy sweep.
-
-    This method iterates through blocks in a defined sweep order and
-    assigns each block to the district with the lowest current population,
-    provided the block is adjacent to that district. This creates a
-    reasonable starting point for the optimization.
 
     Args:
         gdf (gpd.GeoDataFrame): GeoDataFrame with block data.
@@ -401,25 +376,20 @@ def initial_assignment(gdf, G, D, ideal_pop):
     for i, block in enumerate(sweep_order):
         block_pop = int(G.nodes[block]['pop'])
         
-        # Find the best district to add the block to, with a deterministic tie-breaker
+        # Find the best district to add the block to
         best_candidates = []
         for j in range(D):
-            # Check for contiguity and population limit
             is_adjacent = not districts[j] or any(G.has_edge(block, b) for b in districts[j])
-            
             if (pop_per_district[j] + block_pop <= ideal_pop + pop_tolerance and
                 is_adjacent):
                 best_candidates.append((pop_per_district[j], j))
 
         if best_candidates:
-            # Sort candidates by population (ascending) then by district index (ascending)
             best_candidates.sort()
             best_idx = best_candidates[0][1]
             districts[best_idx].add(block)
             pop_per_district[best_idx] += block_pop
         else:
-            # Fallback for blocks that don't fit into any valid district.
-            # This is non-ideal but necessary to ensure all blocks are assigned.
             min_pop_idx = int(np.argmin(pop_per_district))
             districts[min_pop_idx].add(block)
             pop_per_district[min_pop_idx] += block_pop
@@ -429,20 +399,15 @@ def initial_assignment(gdf, G, D, ideal_pop):
 
     return districts
 
-
 def objective(districts, gdf, G, ideal_pop):
     """
     The main objective function to be minimized by the optimizer.
-
-    This function calculates a total score based on population deviation,
-    contiguity, compactness (Polsby-Popper), and moment of inertia.
-    It returns infinity if any constraints are violated.
     """
     total_inertia = 0
     pop_tolerance = ideal_pop * 0.005
 
     for d in districts:
-        if not d:  # Skip empty districts
+        if not d:
             return float('inf')
         
         district_pop = sum(int(G.nodes[b]['pop']) for b in d)
@@ -463,122 +428,118 @@ def objective(districts, gdf, G, ideal_pop):
             logging.debug(f"Polsby-Popper constraint violated. Score: {pp_score}")
             return float('inf')
 
-        # Moment of inertia (to be minimized)
         total_inertia += compute_inertia(d, gdf)
 
     return total_inertia
 
-
-def optimize_districts(districts, gdf, G, ideal_pop, D, max_iter=10000, seed=None):
+def optimize_districts(districts, gdf, G, ideal_pop, D, seed=None):
     """
-    Optimizes the initial district map using a simulated annealing-like approach.
+    Optimizes the initial district map using a greedy, deterministic approach.
 
     Args:
         districts (list): The initial district map.
         gdf (gpd.GeoDataFrame): The GeoDataFrame.
         G (nx.Graph): The adjacency graph.
         ideal_pop (int): The target population per district.
-        D (int): number of districts (used to seed RNG deterministically)
-        max_iter (int): The maximum number of optimization iterations.
-        seed (int|None): RNG seed. If None, deterministically derived from GEOIDs + D.
+        D (int): number of districts.
+        seed (int|None): RNG seed (not used in this version, but kept for signature consistency).
 
     Returns:
         tuple: The optimized district map and its final score.
     """
-    logging.info("Step 4 of 5: Optimizing district map...")
+    logging.info("Step 4 of 5: Optimizing district map using a greedy approach...")
 
-    # Create a deterministic seed if none provided: hash(sorted GEOIDs + D)
-    if seed is None:
-        geoids_sorted = ''.join(sorted(gdf['GEOID20'].astype(str).tolist()))
-        seed_hash = hashlib.sha256((geoids_sorted + str(D)).encode()).hexdigest()
-        seed = int(seed_hash, 16) % (2**32)
-    logging.debug(f"Using RNG seed: {seed}")
-    rng = np.random.default_rng(seed)
-    # Also seed numpy's global RNG for compatibility with code using np.random
-    np.random.seed(seed)
+    current_districts = [set(d) for d in districts]
+    current_score = objective(current_districts, gdf, G, ideal_pop)
+    logging.info(f"Initial objective score: {current_score:.2f}")
 
-    def perturb(districts_local):
-        """Generates a new state by swapping one block between two adjacent districts."""
-        new_districts = [set(d) for d in districts_local]
-        
-        # Choose two random districts
-        d1_idx, d2_idx = rng.choice(len(districts_local), size=2, replace=False)
-        
-        # Find a block in d1 that is adjacent to d2
-        blocks_to_move = [
-            b for b in new_districts[d1_idx]
-            if any(G.has_edge(b, neighbor) for neighbor in new_districts[d2_idx])
-        ]
-        
-        if blocks_to_move:
-            block = rng.choice(blocks_to_move)
-            new_districts[d1_idx].remove(block)
-            new_districts[d2_idx].add(block)
-            logging.debug(f"Perturbing map: moved block {block} from district {d1_idx} to {d2_idx}")
-        else:
-            logging.debug("No valid blocks to move, skipping perturbation.")
+    iteration = 0
+    while True:
+        iteration += 1
+        best_move = None
+        best_score_change = 0
 
-        return new_districts
-
-    current_districts = districts
-    current_score = objective(districts, gdf, G, ideal_pop)
-    best_districts = [set(d) for d in current_districts]
-    best_score = current_score
-
-    temp, alpha = 1000.0, 0.999 # Annealing schedule
-    
-    logging.info("Starting simulated annealing optimization.")
-    for i in range(max_iter):
-        new_districts = perturb(current_districts)
-        new_score = objective(new_districts, gdf, G, ideal_pop)
-
-        accepted = False
-        # Calculate acceptance probability safely (avoid overflow)
-        if new_score < current_score:
-            accepted = True
-        else:
-            try:
-                prob = np.exp((current_score - new_score) / temp)
-                if rng.random() < prob:
-                    accepted = True
-            except OverflowError:
-                # If overflow occurs, skip acceptance by probability
-                accepted = False
-
-        if accepted:
-            current_districts = new_districts
-            current_score = new_score
-            logging.debug(f"Iteration {i+1}: New score {current_score:.2f} accepted.")
+        # Iterate through every block to find the best possible move
+        all_blocks = list(G.nodes)
+        for block_to_move in all_blocks:
+            # Get the current district of the block
+            from_district_idx = -1
+            for idx, d_set in enumerate(current_districts):
+                if block_to_move in d_set:
+                    from_district_idx = idx
+                    break
             
-            # Update best found solution
-            if current_score < best_score:
-                best_districts = [set(d) for d in current_districts]
-                best_score = current_score
-                logging.info(f"Iteration {i+1}: New best score found: {best_score:.2f}")
+            # Find neighboring blocks in other districts
+            neighbors = G.neighbors(block_to_move)
+            neighbor_districts = set()
+            for neighbor in neighbors:
+                for idx, d_set in enumerate(current_districts):
+                    if neighbor in d_set and idx != from_district_idx:
+                        neighbor_districts.add(idx)
+
+            # Evaluate each possible move to a neighboring district
+            for to_district_idx in neighbor_districts:
+                
+                # Create a temporary copy of districts to test the move
+                test_districts = [set(d) for d in current_districts]
+                
+                # Attempt the move
+                test_districts[from_district_idx].remove(block_to_move)
+                test_districts[to_district_idx].add(block_to_move)
+                
+                # Check if the move is valid and calculate the new score
+                new_score = objective(test_districts, gdf, G, ideal_pop)
+                
+                # If the move improves the score, check if it's the best one so far
+                if new_score < current_score and (current_score - new_score) > best_score_change:
+                    best_score_change = current_score - new_score
+                    best_move = (block_to_move, from_district_idx, to_district_idx)
+
+        # Apply the best move found in this iteration
+        if best_move:
+            block, from_idx, to_idx = best_move
+            current_districts[from_idx].remove(block)
+            current_districts[to_idx].add(block)
+            current_score -= best_score_change
+            logging.info(f"Iteration {iteration}: Applied best move. New score: {current_score:.2f}")
         else:
-            logging.debug(f"Iteration {i+1}: New score {new_score:.2f} rejected.")
-        
-        temp *= alpha
-        
-        if (i + 1) % 100 == 0:
-            logging.info(f"Iteration {i+1}/{max_iter}. Current score: {current_score:.2f}")
+            # No improving move found, terminate the loop
+            logging.info(f"Iteration {iteration}: No further improvements found. Optimization complete.")
+            break
 
-    logging.info("Optimization complete.")
-    return best_districts, best_score
-
+    return current_districts, current_score
 
 def apply_tie_breaker(district_sets):
     """
     Applies a tie-breaker to ensure consistent output format.
-
-    Sorts the blocks within each district, and then sorts the districts
-    themselves based on their sorted list of blocks.
     """
     logging.info("Step 5 of 5: Applying tie-breaker...")
     sorted_districts = [sorted(list(d)) for d in district_sets]
     sorted_districts.sort()
     return sorted_districts
 
+def plot_districts(gdf, final_districts, state_name, state_code):
+    """
+    Generates and saves a color-coded map of the districts.
+
+    Args:
+        gdf (gpd.GeoDataFrame): GeoDataFrame with block data.
+        final_districts (list): List of district assignments (lists of GEOID20s).
+        state_name (str): Name of the state.
+        state_code (str): Two-letter state code.
+    """
+    logging.info("Generating district map visualization...")
+    gdf['district'] = -1
+    for i, district in enumerate(final_districts):
+        gdf.loc[gdf['GEOID20'].isin(district), 'district'] = i + 1
+    
+    fig, ax = plt.subplots(figsize=(10, 10))
+    gdf.plot(column='district', cmap='tab20', ax=ax, legend=True)
+    plt.title(f"District Map for {state_name}")
+    output_filename = f"districts_{state_code}.png"
+    plt.savefig(output_filename)
+    plt.close()
+    logging.info(f"District map saved to {output_filename}")
 
 def main():
     """Main function to run the redistricting algorithm."""
@@ -612,13 +573,16 @@ def main():
         # Initial assignment
         initial_districts = initial_assignment(gdf, G, D, ideal_pop)
         
-        # Optimize (deterministic seed derived internally)
+        # Optimize
         final_districts, final_score = optimize_districts(
             initial_districts, gdf, G, ideal_pop, D, max_iter=10000, seed=None
         )
         
         # Apply tie-breaker
         final_districts = apply_tie_breaker(final_districts)
+        
+        # Generate visualization
+        plot_districts(gdf, final_districts, state_name, state_code)
         
         # Output results
         logging.info("Process complete! Generating output.")
@@ -632,7 +596,7 @@ def main():
             print(f"District {i+1}: Pop = {d_pop:,}, Polsby-Popper = {polsby_popper(final_districts[i], gdf):.4f}")
 
         print(f"\nTotal Population: {total_pop:,}")
-        print(f"Compactness Score (Σ J_d): {final_score:.2f}")
+        print(f"Compactness Score (Î£ J_d): {final_score:.2f}")
 
         # Save to JSON
         output_data = {
@@ -651,16 +615,13 @@ def main():
 
     except Exception as e:
         logging.error(f"An error occurred: {e}")
-        # Only clean up if the process was successful to allow inspection on error
         print(f"\nTemporary directory {temp_dir} was not deleted for inspection.")
         raise
     finally:
-        # Clean up the temporary directory on successful completion
         if not args.debug and os.path.exists(temp_dir):
             logging.info("Cleaning up temporary files...")
             shutil.rmtree(temp_dir)
             logging.info("Cleanup complete.")
-
 
 if __name__ == "__main__":
     main()
