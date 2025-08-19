@@ -91,8 +91,7 @@ To ensure a single, reproducible result, a set of deterministic tie-breaker rule
 * **Final Output Ordering**: The final output districts are sorted based on their contents to guarantee the final JSON file is consistently formatted.
 
 ***
-
-### Layperson Summary
+**Explanation:** 
 
 This redistricting program creates a fair and compact map using a consistent, repeatable process.
 
