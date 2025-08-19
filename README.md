@@ -91,7 +91,7 @@ Once the draft districts are created, the boundaries are refined using **simulat
 
 At each step, a block may be moved between neighboring districts:  
 * If the move **reduces** total inertia (`Σ J_d`) and satisfies all constraints (contiguity, population, compactness), it is accepted.  
-* If the move **increases** inertia, it may still be accepted with a probability that decreases over time (the "cooling schedule").  
+* If the move **increases** inertia, it may still be accepted with a probability that decreases over time (the "cooling schedule" `temp = 1000, alpha = 0.95, max_iter = 10000`).  
 
 This allows exploration of many possible solutions and avoids getting stuck in suboptimal arrangements.  
 
