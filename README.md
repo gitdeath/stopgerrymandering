@@ -56,8 +56,8 @@ Our approach uses a multi-step, deterministic algorithm to find an optimal distr
 First, the algorithm establishes a deterministic sweep order for assigning census blocks.
 
 * **Bounding Box**: The algorithm computes the geographical boundaries of the entire state to define a sweeping area:
-    $$min\_x = \min(x_i), \quad max\_x = \max(x_i)$$
-    $$min\_y = \min(y_i), \quad max\_y = \max(y_i)$$
+    `min\_x = \min(x_i), \quad max\_x = \max(x_i)`
+    `min\_y = \min(y_i), \quad max\_y = \max(y_i)`
 
 * **Sweep Order**: A **deterministic tie-breaker hash** (see below) is used to select one of four sweep orders:
     * 0: Northeast Sweep (descending y, ascending x)
