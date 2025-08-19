@@ -49,43 +49,58 @@ For each district `d`:
 
 Our approach uses a multi-step, deterministic algorithm to find an optimal districting plan.
 
-#### **1. Initial Assignment: Quadrant Sweep**
+<br>
+
+**1. Initial Assignment: Quadrant Sweep**
 
 First, the algorithm establishes a deterministic sweep order for assigning census blocks.
 
-* **Bounding Box:** The algorithm computes the geographical boundaries of the entire state to define a sweeping area.
-    * `min_x = min(x_i)`, `max_x = max(x_i)`
-    * `min_y = min(y_i)`, `max_y = max(y_i)`
-* **Sweep Order:** A deterministic **tie-breaker hash** (see below) is used to select one of four sweep orders:
-    * **0: Northeast Sweep** (descending y, ascending x)
-    * **1: Southwest Sweep** (ascending y, ascending x)
-    * **2: Southeast Sweep** (ascending y, descending x)
-    * **3: Northwest Sweep** (descending y, descending x)
-* The algorithm then assigns blocks to initial districts by iterating through them in the determined sweep order, merging adjacent blocks until the ideal population is met.
+* **Bounding Box**: The algorithm computes the geographical boundaries of the entire state to define a sweeping area:
+    $$min\_x = \min(x_i), \quad max\_x = \max(x_i)$$
+    $$min\_y = \min(y_i), \quad max\_y = \max(y_i)$$
 
-**Explanation:** The process begins by using a predetermined sweeping direction to create the first version of the districts. It draws a box around the entire state and then, based on a unique hash code, decides to sweep from one of the four corners (northeast, southwest, southeast, or northwest). As it sweeps, it adds adjacent census blocks to a district until that district has the correct number of people.
+* **Sweep Order**: A **deterministic tie-breaker hash** (see below) is used to select one of four sweep orders:
+    * 0: Northeast Sweep (descending y, ascending x)
+    * 1: Southwest Sweep (ascending y, ascending x)
+    * 2: Southeast Sweep (ascending y, descending x)
+    * 3: Northwest Sweep (descending y, descending x)
+    The algorithm then assigns blocks to initial districts by iterating through them in the determined sweep order, merging adjacent blocks until the ideal population is met.
 
-#### **2. Optimization: Hill-Climbing / Simulated Annealing**
+<br>
+
+**2. Optimization: Simulated Annealing**
 
 After the initial district assignment, the algorithm refines the boundaries to improve the compactness score while maintaining all constraints.
 
-* A **hill-climbing** or **simulated annealing** approach is used to iteratively move blocks between adjacent districts.
-* At each step, a move (swapping a block) is evaluated. The move is accepted if it reduces the total moment of inertia (`sum J_d`) and does not violate any of the contiguity, population, or Polsby-Popper constraints.
-* This process continues until no further improvements can be made.
+Our approach uses a **simulated annealing** method to iteratively move blocks between adjacent districts.
 
-**Explanation:** Once the initial districts are formed, the algorithm refines them by using a process that’s like making small improvements. It repeatedly considers moving a single block from one district to a neighboring one. If this move makes the districts more compact and doesn't break any of the population or shape rules, it accepts the change. This continues until no such moves can be made to improve the districts further.
+At each step, a move (swapping a block) is evaluated by calculating its effect on the total **moment of inertia** ($$\Sigma J_d$$).
 
-#### **3. Tie-Breaker Rules**
+* **Improving Moves**: The move is accepted if it reduces the total moment of inertia and does not violate any of the contiguity, population, or Polsby-Popper constraints.
+* **Worsening Moves**: A move that increases the score (makes the map worse) may still be accepted with a certain probability. This probability decreases over time according to a "cooling schedule."  This process allows the algorithm to escape **local optima** and explore a wider range of possible solutions, increasing its chance of finding a globally optimal plan. The process continues for a fixed number of iterations.
 
-To ensure a single, reproducible result even when multiple optimal solutions exist, a series of tie-breaker rules are applied. These rules are used to select the quadrant sweep order and to resolve any remaining ties in the final output.
+<br>
 
-1.  **Quadrant Sweep Selection:** A **SHA256 hash** of the concatenated, sorted block IDs is computed. The first byte of this hash, modulo 4, selects the sweep order (0-3).
-2.  **Lexicographical Block ID:** If multiple solutions have the same compactness score, the solution is chosen based on the lexicographical ordering of the block IDs within each district.
-3.  **Lexicographical Centroid Ordering:** If a tie still exists, a final tie-breaker is applied by comparing the lexicographical ordering of the district centroids (sorted by x, then y coordinates).
+**3. Tie-Breaker Rules**
 
-**Explanation:** These are rules designed to ensure a consistent outcome every time the process is run. If the algorithm finds multiple equally good solutions, a set of rules are applied to decide which one to choose. This includes using a unique digital code (a SHA256 hash) to select the starting sweep direction and then sorting the districts by their block IDs or geographic centers to break any remaining ties.
+To ensure a single, reproducible result, a set of deterministic tie-breaker rules are applied throughout the process.
 
----
+* **Quadrant Sweep Selection**: A **SHA256 hash** of the concatenated, sorted block IDs is computed. The first byte of this hash, modulo 4, selects the sweep order (0-3).
+* **Initial Assignment Tie-Breaker**: During the initial sweep, if a block can be legally assigned to multiple districts, the algorithm deterministically chooses the district with the **lowest current population**. In the case of a tie in population, it chooses the district with the **lowest index**.
+* **Optimization Tie-Breaker**: The simulated annealing process is made fully reproducible by **seeding the random number generator** with the number of districts. This ensures that every run of the program for a given state and number of districts will produce the exact same sequence of "random" numbers and, therefore, the same outcome.
+* **Final Output Ordering**: The final output districts are sorted based on their contents to guarantee the final JSON file is consistently formatted.
+
+***
+
+### Layperson Summary
+
+This redistricting program creates a fair and compact map using a consistent, repeatable process.
+
+First, the program creates an initial draft of the districts. It does this by drawing an invisible box around the state and, using a special digital code based on the census data, chooses a specific starting corner to "sweep" from. As it sweeps, it assigns census blocks to districts one by one, making sure each district meets its target population.
+
+Next, the program refines this initial draft using a technique called **simulated annealing**. This process is like a more sophisticated version of "trial and error." It makes small, random changes to the district boundaries. It always keeps a change that makes the districts better (more compact), but it will also sometimes, early in the process, accept a change that makes the districts a little worse. This counterintuitive step is crucial because it helps the program avoid getting stuck in a mediocre solution and find a truly great one.
+
+Finally, to make sure the result is always the same, the program uses a set of tie-breaker rules. It uses the digital code to select the initial sweep direction, ensuring it always starts the same way. The "trial and error" phase is also made repeatable by using the number of districts as a "seed," which ensures the same sequence of random choices is made every time. This guarantees that you will get the exact same, high-quality map no matter how many times you run the program on the same data.
 
 ### **Output**
 
