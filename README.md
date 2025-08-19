@@ -64,6 +64,7 @@ First, the algorithm establishes a deterministic sweep order for assigning censu
     * 1: Southwest Sweep (ascending y, ascending x)
     * 2: Southeast Sweep (ascending y, descending x)
     * 3: Northwest Sweep (descending y, descending x)
+      
     The algorithm then assigns blocks to initial districts by iterating through them in the determined sweep order, merging adjacent blocks until the ideal population is met.
 
 <br>
