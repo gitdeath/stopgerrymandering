@@ -7,8 +7,31 @@ This project solves the complex problem of creating political districts from a s
 
 ### **Inputs**
 
-* "2020.pl.zip" State File From: https://www2.census.gov/programs-surveys/decennial/2020/data/01-Redistricting_File--PL_94-171/
-* "tabblock20.zip" State File From: https://www2.census.gov/geo/tiger/TIGER2020PL/STATE/
+### 1. The Required Input Files
+- **Technical Summary**: The program requires two specific types of `.zip` files from the U.S. Census Bureau for a given state.
+  1.  **TIGER/Line Shapefile**: Contains the geographic data. The program expects a filename like `tl_2024_{fips}_tabblock20.zip`. These are sourced from the Census TIGER/Line database.
+  2.  **P.L. 94-171 Redistricting Data**: Contains the population data. The program expects a filename like `{state_code}2020.pl.zip`. This data is specifically compiled for redistricting purposes.
+- **Plain English Summary**: To draw a fair map, the program needs two key ingredients. It needs a "shape book" (the TIGER file) that contains a precise drawing of every neighborhood block, and a "population book" (the P.L. 94-171 file) that lists how many people live in each of those blocks.
+
+---
+### 2. The Census Block
+- **Technical Summary**: A **Census Block** is the smallest geographic unit for which the Census Bureau collects and tabulates data. It is the atomic element of the program's analysis. Each block is identified by a unique 15-character code called a **`GEOID`**. The program uses each block's `GEOID`, its geographic shape (a polygon), and its total population as the fundamental units for building districts.
+- **Plain English Summary**: Think of a Census Block as the smallest puzzle piece of the United States map.  Often, it's just a single city block surrounded by streets. The entire redistricting map is built by grouping these tiny, individual pieces together.
+
+---
+### 3. How the Program Uses the Data
+- **Technical Summary**: From the unzipped files, the program extracts three key pieces of information:
+  1.  **Geometry**: From the shapefile (`.shp`), it gets the polygon shape for each Census Block.
+  2.  **`GEOID`**: This unique ID from both the shapefile and the geoheader file (`*geo2020.pl`) is used to merge the geographic data with the population data.
+  3.  **Population**: From the population data file (`*000012020.pl`), it gets the value for `P1_001N`, which is the total population count for that block.
+- **Plain English Summary**: The program reads the shape of a puzzle piece from the "shape book." It then looks up that piece's unique ID number to find the matching entry in the "population book." Finally, it takes the population count and "sticks it" onto the puzzle piece, so it knows both the shape and population of every single piece.
+
+---
+### 4. How the Census Bureau Creates the Data
+- **Technical Summary**: The Census Bureau creates this data through two massive, separate efforts.
+  - The **TIGER/Line shapefiles** are the product of an ongoing geospatial program that uses aerial imagery, GPS, and other tools to maintain a comprehensive digital map of the entire country.
+  - The **P.L. 94-171 data** is a specific output of the Decennial Census. After collecting responses from every household, the Bureau aggregates the population counts to the level of a Census Block and applies disclosure avoidance techniques (like differential privacy) to protect the confidentiality of individual respondents before publishing the data.
+- **Plain English Summary**: The government creates this data in two steps. First, expert mapmakers use high-tech tools to draw a hyper-detailed digital map of every road, river, and neighborhood in the country. Second, during the census every ten years, they count every person. They then publish these two sets of information—the maps and the population counts—for public use in processes like redistricting.
 
 ---
 
