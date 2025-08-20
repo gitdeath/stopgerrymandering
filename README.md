@@ -116,3 +116,46 @@ To guarantee reproducibility, deterministic tie-breakers are used:
 * `final_compactness_score`: The total moment of inertia (`sum J_d`) of the final districting plan.
 
 
+# Stop Gerrymandering — Modular Redistricting Tool
+
+## Build & Run
+
+### 1. Clone the repo
+git clone https://github.com/gitdeath/stopgerrymandering.git
+cd stopgerrymandering
+
+### 2. Set up Python environment
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+### 3. Install dependencies
+pip install -e .
+
+If GeoPandas stack fails on Windows:
+pip install --only-binary=:all: shapely pyproj fiona rtree geopandas
+
+### 4. Prepare input data
+Place in project root:
+- tl_2024_<FIPS>_tabblock20.zip (TIGER/Line block shapefile)
+- <state>2020.pl.zip (PL 94-171 data, e.g. mo2020.pl.zip)
+
+### 5. Run the tool
+redistrict --state MO --config config/states.yaml --debug
+
+- --state = two-letter state code (e.g. MO, CA, TX)
+- --config = path to the YAML config
+- --debug = optional flag for detailed logs
+
+### 6. Outputs
+- districts_MO.png — district map visualization
+- districts_MO.json — district assignments and metrics
+
+---
+
+## Development Notes
+- Config (config/states.yaml) defines CRS, tolerances, compactness thresholds, and state metadata.
+- CLI lives in src/redistricting/cli.py.
+- Modules are split for I/O, graph building, metrics, assignment, optimization, and visualization.
