@@ -122,6 +122,7 @@ To guarantee reproducibility, deterministic tie-breakers are used:
 
 ### 1. Clone the repo
 git clone https://github.com/gitdeath/stopgerrymandering.git
+
 cd stopgerrymandering
 
 ### 2. Set up Python environment
