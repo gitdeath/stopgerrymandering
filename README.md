@@ -14,24 +14,24 @@ This project solves the complex problem of creating political districts from a s
 
 ### **Constraints**
 
-**1. Contiguity**  
-Every district must consist of a single, connected geographic area. No district may contain disconnected pieces.  
+### 1. Contiguity
+- **Technical Summary**: A district is valid only if the subgraph induced by its member census blocks is connected. The program enforces this by creating a graph `G` where blocks are nodes and adjacency defines edges. For a set of blocks `d` in a district, the check `networkx.is_connected(G.subgraph(d))` must return `True`.
+- **Plain English Summary**: Every part of a district must be physically connected. You should be able to "walk" from any point in a district to any other point without ever stepping into a different district. It ensures a district is one solid piece.
 
-**Explanation:** A district has to be one unbroken shape on the map—no scattered islands or separate chunks.  
+---
+### 2. Population Parity
+- **Technical Summary**: The population of each district ($P_d$) must be within a small tolerance of the ideal population ($P_{ideal}$). The program enforces the formula: $|P_d - P_{ideal}| \le P_{ideal} \times 0.005$. This means the population must be within ±0.5% of the target.
+- **Plain English Summary**: Each district must have almost the exact same number of people. It's like cutting a cake for a group of people and making sure every single slice is the same size.
 
-**2. Population Parity**  
-Each district’s population must be within ±0.5% of the ideal size, where  
-`P_ideal = (Total Population) / D`.  
+---
+### 3. Shape Compactness
+- **Technical Summary**: The geometric compactness of a district is measured using the Polsby-Popper score, calculated with the formula: $$PP(D) = \frac{4\pi \times Area(D)}{Perimeter(D)^2}$$ A score of 1.0 represents a perfect circle. The program requires that for every district `D`, $PP(D) \ge compactness\_threshold$ (e.g., 0.20).
+- **Plain English Summary**: This rule prevents districts that are long, thin, and snaky. It encourages shapes that are more bundled and "compact," like a puddle rather than a winding river, making them fairer and easier for a community to identify with.
 
-**Explanation:** All districts must have nearly the same number of people. We calculate the perfect size by dividing the total population by the number of districts, and then make sure every district is within half a percent of that number.  
-
-**3. Shape Compactness**  
-District shapes are evaluated with the **Polsby-Popper score**, defined as:  
-`PolsbyPopper_d = (4 * π * Area_d) / (Perimeter_d^2)`  
-Each district must score at least 0.20. 
-
-**Explanation:** To stop oddly stretched or “squiggly” shapes, we check how round each district is using a compactness score. A perfect circle is 1, and we require at least 0.20 to make sure districts are reasonably tidy and not distorted.  
-
+---
+### 4. Deterministic Output
+- **Technical Summary**: The program guarantees an identical output for a given input by eliminating all randomness. It creates a deterministic "sweep order" for processing census blocks by calculating a `hashlib.sha256` digest of the sorted block IDs, which seeds a deterministic sorting algorithm. All tie-breaking decisions are also handled by sorting, ensuring a consistent choice is made every time.
+- **Plain English Summary**: The map is drawn by a robot following a precise, unchangeable set of instructions. Because there's no human bias or random chance involved, the robot will draw the exact same map every single time it's given the same state data.
 ---
 
 ### **Objective**
