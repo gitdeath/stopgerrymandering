@@ -5,7 +5,7 @@ This project solves the complex problem of creating political districts from a s
 
 ---
 
-### **Inputs**
+## **Inputs**
 
 ### 1. The Required Input Files
 - **Technical Summary**: The program requires two specific types of `.zip` files from the U.S. Census Bureau for a given state.
@@ -35,7 +35,7 @@ This project solves the complex problem of creating political districts from a s
 
 ---
 
-### **Constraints**
+## **Constraints**
 
 ### 1. Contiguity
 - **Technical Summary**: A district is valid only if the subgraph induced by its member census blocks is connected. The program enforces this by creating a graph `G` where blocks are nodes and adjacency defines edges. For a set of blocks `d` in a district, the check `networkx.is_connected(G.subgraph(d))` must return `True`.
@@ -57,7 +57,7 @@ This project solves the complex problem of creating political districts from a s
 - **Plain English Summary**: The map is drawn by a robot following a precise, unchangeable set of instructions. Because there's no human bias or random chance involved, the robot will draw the exact same map every single time it's given the same state data.
 ---
 
-### **The Algorithm**
+## **The Algorithm**
 
 ### 1. Data Loading and Preparation
 - **Technical Summary**: The program begins by unzipping the TIGER/Line shapefile and the PL 94-171 census data zips for the selected state. It then loads the `.shp`, geoheader, and population files using `geopandas` and `pandas`, merging them into a single GeoDataFrame where each census block's geometry is linked to its population count.
