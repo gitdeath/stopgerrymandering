@@ -34,87 +34,36 @@ This project solves the complex problem of creating political districts from a s
 - **Plain English Summary**: The map is drawn by a robot following a precise, unchangeable set of instructions. Because there's no human bias or random chance involved, the robot will draw the exact same map every single time it's given the same state data.
 ---
 
-### **Objective**
-
-The goal is to minimize the **total population-weighted moment of inertia** (`Σ J_d`) across all districts. This ensures districts are compact with populations centered close to their district’s centroid.  
-
-For each district `d`:  
-
-**1. Population Centroid (`μ_d`)**  
-The population-weighted center of the district is calculated as:  
-`μ_d = ( (Σ p_i * x_i) / (Σ p_i), (Σ p_i * y_i) / (Σ p_i) )`  
-
-**Explanation:** Imagine balancing a district on a seesaw where each person is a small weight at their home location. The centroid is the exact point where it would balance perfectly.  
-
-**2. Moment of Inertia (`J_d`)**  
-Measures how spread out the population is around the centroid:  
-`J_d = Σ [ p_i * distance((x_i, y_i), μ_d)^2 ]`  
-
-**Explanation:** This is like a "spread score." A low value means most people live close to the center of the district, creating a compact, sensible shape. High values mean the population is scattered, making the district less compact.  
-
-The algorithm seeks to minimize the sum of these inertia values across all districts: 
-`Σ J_d`  
-
-**Explanation:** By keeping the spread small in every district, the final map is fairer, with each district drawn around its natural center of population.  
-
----
-
 ### **The Algorithm**
 
-The districting process is performed in three main steps: **Initial Assignment**, **Optimization**, and **Tie-Breaker Rules**.  
+### 1. Data Loading and Preparation
+- **Technical Summary**: The program begins by unzipping the TIGER/Line shapefile and the PL 94-171 census data zips for the selected state. It then loads the `.shp`, geoheader, and population files using `geopandas` and `pandas`, merging them into a single GeoDataFrame where each census block's geometry is linked to its population count.
+- **Plain English Summary**: First, the program gathers two key pieces of information: a detailed map of all the neighborhood blocks and a census list saying how many people live in each block. It then combines them into a single master map that knows the shape and population of every single block.
 
 ---
-
-**1. Initial Assignment: Quadrant Sweep**  
-The algorithm begins by assigning census blocks to districts in a deterministic sweep order.  
-
-* **Bounding Box:**  
-  Define the state’s limits:  
-  `min_x = min(x_i),  max_x = max(x_i)`  
-  `min_y = min(y_i),  max_y = max(y_i)`  
-
-* **Sweep Order:**  
-  A SHA256 hash of the sorted block IDs is used. The first byte of the hash, modulo 4, selects one of four sweep directions:  
-  - 0: Northeast (descending y, ascending x)  
-  - 1: Southwest (ascending y, ascending x)  
-  - 2: Southeast (ascending y, descending x)  
-  - 3: Northwest (descending y, descending x)  
-
-  Blocks are then assigned one by one until the ideal population is reached for each district.  
-
-**Explanation:** The program picks a corner of the state to start from (chosen consistently using a digital hash of the data). It then sweeps across, filling districts with blocks until each one reaches its target population.  
+### 2. Graph Construction
+- **Technical Summary**: Using the merged GeoDataFrame, the program constructs an adjacency graph with `networkx`. Each census block is a node in the graph, and an edge is created between any two nodes whose corresponding blocks touch geographically. This graph mathematically represents the state's spatial layout.
+- **Plain English Summary**: The program creates a "neighbor list" for every block on the map. It goes through the entire state and notes down every single block that touches another one. This creates a network of connections, like a social network but for geography.
 
 ---
-
-**2. Optimization: Simulated Annealing**  
-Once the draft districts are created, the boundaries are refined using **simulated annealing**.  
-
-At each step, a block may be moved between neighboring districts:  
-* If the move **reduces** total inertia (`Σ J_d`) and satisfies all constraints (contiguity, population, compactness), it is accepted.  
-* If the move **increases** inertia, it may still be accepted with a probability that decreases over time (the "cooling schedule" `temp = 1000, alpha = 0.95, max_iter = 10000`).  
-
-This allows exploration of many possible solutions and avoids getting stuck in suboptimal arrangements.  
-
-**Explanation:** The program improves the draft map by trial and error. It usually keeps good changes that make districts more compact, but sometimes—especially early—it also keeps worse changes to avoid getting stuck with a mediocre map. Over time, it becomes pickier, keeping only better solutions.  
+### 3. Initial District Assignment
+- **Technical Summary**: The program iterates through every block in a deterministic "sweep" order. It uses a greedy algorithm to assign each block to the most suitable adjacent district, prioritizing districts with the lowest population while staying within the maximum population tolerance. This creates a complete, valid first draft of the district map.
+- **Plain English Summary**: The program starts with a blank map and a set of empty "buckets," one for each district. Following a fixed path across the state (e.g., top-to-bottom), it picks up each block one-by-one and places it into the best neighboring bucket that isn't too full yet.
 
 ---
+### 4. Optimization
+- **Technical Summary**: The initial map is refined using a greedy local search algorithm. The program repeatedly evaluates moving a single block from its current district to a neighboring one. If a move improves the overall compactness score without violating any constraints (contiguity, population parity), the best such move is applied. This process repeats until no more improvements can be found.
+- **Plain English Summary**: The program polishes the first-draft map. It looks for any blocks along the edges of districts that might be a better fit in the district next door. It carefully moves these blocks, one by one, to make the districts more compact and tidy, stopping when no more improvements can be made.
 
-**3. Tie-Breaker Rules**  
-To guarantee reproducibility, deterministic tie-breakers are used:  
-
-* **Sweep Direction:** Chosen from the SHA256 hash of block IDs.  
-* **Block Assignment:** If multiple districts are possible, choose the one with the lowest current population; ties go to the lowest index.  
-* **Randomization:** Simulated annealing uses a seeded random number generator (seed = number of districts).  
-* **Final Output:** Districts are sorted consistently for stable JSON output.  
-
-**Explanation:** These rules ensure the program always produces the same map when given the same data, eliminating randomness and guaranteeing fairness and repeatability.  
+---
+### 5. Finalization
+- **Technical Summary**: Once the optimization is complete, the final district assignments are saved. A `.png` image of the new district map is generated using `matplotlib` for visualization, and a `.json` file containing the precise list of census blocks for each district, along with final scores and population counts, is written to the disk.
+- **Plain English Summary**: After the map is polished, the program takes a "picture" of it and saves it as an image file. It also creates a detailed text file that lists exactly which blocks belong to each new district, creating a permanent record of the final, fair map.
 
 
-### **Output**
-
-* `district_map`: A list of districts, where each district is a set of the block IDs it contains.
-* `final_compactness_score`: The total moment of inertia (`sum J_d`) of the final districting plan.
-
+---
+---
+---
 
 # Stop Gerrymandering — Modular Redistricting Tool
 
@@ -149,10 +98,6 @@ redistrict --state MO --config config/states.yaml --debug
 - --state = two-letter state code (e.g. MO, CA, TX)
 - --config = path to the YAML config
 - --debug = optional flag for detailed logs
-
-### 6. Outputs
-- districts_MO.png — district map visualization
-- districts_MO.json — district assignments and metrics
 
 ---
 
