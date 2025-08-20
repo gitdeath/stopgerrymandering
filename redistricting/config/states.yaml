@@ -1,0 +1,60 @@
+# Global defaults
+defaults:
+crs_epsg: 26915 # projected CRS for accurate area/distance
+pop_tolerance_ratio: 0.005 # ±0.5%
+compactness_threshold: 0.20 # Polsby–Popper minimum
+progress_interval: 5000
+
+
+# State metadata: two-letter code → fips, name, default districts
+states:
+MO: { fips: '29', name: 'Missouri', districts: 8 }
+CA: { fips: '06', name: 'California', districts: 52 }
+TX: { fips: '48', name: 'Texas', districts: 38 }
+NY: { fips: '36', name: 'New York', districts: 26 }
+FL: { fips: '12', name: 'Florida', districts: 28 }
+AK: { fips: '02', name: 'Alaska', districts: 1 }
+AL: { fips: '01', name: 'Alabama', districts: 7 }
+AR: { fips: '05', name: 'Arkansas', districts: 4 }
+AZ: { fips: '04', name: 'Arizona', districts: 9 }
+CO: { fips: '08', name: 'Colorado', districts: 8 }
+CT: { fips: '09', name: 'Connecticut', districts: 5 }
+DE: { fips: '10', name: 'Delaware', districts: 1 }
+GA: { fips: '13', name: 'Georgia', districts: 14 }
+HI: { fips: '15', name: 'Hawaii', districts: 2 }
+IA: { fips: '19', name: 'Iowa', districts: 4 }
+ID: { fips: '16', name: 'Idaho', districts: 2 }
+IL: { fips: '17', name: 'Illinois', districts: 17 }
+IN: { fips: '18', name: 'Indiana', districts: 9 }
+KS: { fips: '20', name: 'Kansas', districts: 4 }
+KY: { fips: '21', name: 'Kentucky', districts: 6 }
+LA: { fips: '22', name: 'Louisiana', districts: 6 }
+MA: { fips: '25', name: 'Massachusetts', districts: 9 }
+MD: { fips: '24', name: 'Maryland', districts: 8 }
+ME: { fips: '23', name: 'Maine', districts: 2 }
+MI: { fips: '26', name: 'Michigan', districts: 13 }
+MN: { fips: '27', name: 'Minnesota', districts: 8 }
+MS: { fips: '28', name: 'Mississippi', districts: 4 }
+MT: { fips: '30', name: 'Montana', districts: 2 }
+NC: { fips: '37', name: 'North Carolina', districts: 14 }
+ND: { fips: '38', name: 'North Dakota', districts: 1 }
+NE: { fips: '31', name: 'Nebraska', districts: 3 }
+NH: { fips: '33', name: 'New Hampshire', districts: 2 }
+NJ: { fips: '34', name: 'New Jersey', districts: 12 }
+NM: { fips: '35', name: 'New Mexico', districts: 3 }
+NV: { fips: '32', name: 'Nevada', districts: 4 }
+OH: { fips: '39', name: 'Ohio', districts: 15 }
+OK: { fips: '40', name: 'Oklahoma', districts: 5 }
+OR: { fips: '41', name: 'Oregon', districts: 6 }
+PA: { fips: '42', name: 'Pennsylvania', districts: 17 }
+RI: { fips: '44', name: 'Rhode Island', districts: 2 }
+SC: { fips: '45', name: 'South Carolina', districts: 7 }
+SD: { fips: '46', name: 'South Dakota', districts: 1 }
+TN: { fips: '47', name: 'Tennessee', districts: 9 }
+UT: { fips: '49', name: 'Utah', districts: 4 }
+VA: { fips: '51', name: 'Virginia', districts: 11 }
+VT: { fips: '50', name: 'Vermont', districts: 1 }
+WA: { fips: '53', name: 'Washington', districts: 10 }
+WI: { fips: '55', name: 'Wisconsin', districts: 8 }
+WV: { fips: '54', name: 'West Virginia', districts: 2 }
+WY: { fips: '56', name: 'Wyoming', districts: 1 }
