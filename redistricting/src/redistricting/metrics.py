@@ -1,94 +1,78 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import numpy as np
-import networkx as nx
-from shapely.geometry import Polygon
 
 
-def compute_inertia(district_blocks, gdf) -> float:
+def get_sweep_order(gdf):
     """
-    Population-weighted moment of inertia about the district's pop-weighted centroid.
-    Returns +inf if district_pop == 0 (invalid).
+    Deterministic sweep order based on a hash of all block IDs.
+    Produces one of four sweeps over (x,y) to avoid bias.
     """
-    district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
-    total_pop = district_gdf["P1_001N"].astype(int).sum()
-    if total_pop == 0:
-        return float("inf")
+    block_ids = sorted(gdf["GEOID20"])
+    hash_val = hashlib.sha256("".join(block_ids).encode()).hexdigest()
+    sweep_idx = int(hash_val, 16) % 4
 
-    cx = (district_gdf["P1_001N"].astype(int) * district_gdf["x"]).sum() / total_pop
-    cy = (district_gdf["P1_001N"].astype(int) * district_gdf["y"]).sum() / total_pop
-
-    inertia = (
-        district_gdf["P1_001N"].astype(int)
-        * ((district_gdf["x"] - cx) ** 2 + (district_gdf["y"] - cy) ** 2)
-    ).sum()
-
-    return float(inertia)
+    if sweep_idx == 0:  # NE: descending y, ascending x
+        return gdf.sort_values(by=["y", "x"], ascending=[False, True])["GEOID20"].tolist()
+    elif sweep_idx == 1:  # SW: ascending y, ascending x
+        return gdf.sort_values(by=["y", "x"], ascending=[True, True])["GEOID20"].tolist()
+    elif sweep_idx == 2:  # SE: ascending y, descending x
+        return gdf.sort_values(by=["y", "x"], ascending=[True, False])["GEOID20"].tolist()
+    else:  # NW: descending y, descending x
+        return gdf.sort_values(by=["y", "x"], ascending=[False, False])["GEOID20"].tolist()
 
 
-def polsby_popper(district_blocks, gdf) -> float:
+def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Polsby–Popper compactness: 4πA / P^2 for the unioned district geometry.
-    Returns 0 if geometry is invalid or perimeter is 0.
+    Greedy initial assignment of blocks to districts with adjacency + pop guardrails.
     """
-    district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
-    union_geom = district_gdf.geometry.unary_union
-    if isinstance(union_geom, Polygon):
-        area = union_geom.area
-        perim = union_geom.length
-        return float((4 * np.pi * area) / (perim ** 2)) if perim > 0 else 0.0
-    return 0.0
+    logging.info("Step 3 of 5: Generating initial district map...")
+    sweep_order = get_sweep_order(gdf)
 
-
-def is_contiguous(district_blocks, G: nx.Graph) -> bool:
-    """A district is contiguous if its induced subgraph is connected."""
-    sub = G.subgraph(district_blocks)
-    return nx.is_connected(sub) if sub.number_of_nodes() > 0 else False
-
-
-def objective(
-    districts,
-    gdf,
-    G: nx.Graph,
-    ideal_pop: float,
-    pop_tolerance_ratio: float,
-    compactness_threshold: float,
-) -> float:
-    """
-    Objective to minimize: sum of moments of inertia across districts,
-    subject to constraints. Returns +inf if any constraint is violated.
-    """
-    total_inertia = 0.0
+    districts = [set() for _ in range(D)]
+    pop_per_district = [0] * D
     pop_tol = ideal_pop * pop_tolerance_ratio
 
-    for i, d in enumerate(districts):
-        dist_num = i + 1
-        if not d:
-            logging.error(f"Constraint Failed: District {dist_num} is empty.")
-            return float("inf")
+    for i, block in enumerate(sweep_order):
+        block_pop = int(G.nodes[block]["pop"])
 
-        district_pop = sum(int(G.nodes[b]["pop"]) for b in d)
-        min_pop, max_pop = ideal_pop - pop_tol, ideal_pop + pop_tol
-        if not (min_pop <= district_pop <= max_pop):
-            logging.error(
-                f"Constraint Failed: District {dist_num} population is {district_pop:,}, "
-                f"but must be between {min_pop:,.0f} and {max_pop:,.0f}."
-            )
-            return float("inf")
+        # Candidate districts where adding this block keeps pop within tolerance
+        # and the block is adjacent to at least one block already in the district.
+        candidates = []
+        for j in range(D):
+            is_adjacent = not districts[j] or any(G.has_edge(block, b) for b in districts[j])
+            if (pop_per_district[j] + block_pop <= ideal_pop + pop_tol) and is_adjacent:
+                candidates.append((pop_per_district[j], j))
 
-        if not is_contiguous(d, G):
-            logging.error(f"Constraint Failed: District {dist_num} is not contiguous.")
-            return float("inf")
+        if candidates:
+            # Prefer the candidate district with the smallest current population.
+            candidates.sort()
+            best_idx = candidates[0][1]
+        else:
+            # Fallback 1: No ideal candidates. Relax the population constraint,
+            # but still require adjacency to prevent non-contiguous districts.
+            adj_candidates = []
+            for j in range(D):
+                is_adjacent = not districts[j] or any(G.has_edge(block, b) for b in districts[j])
+                if is_adjacent:
+                    adj_candidates.append((pop_per_district[j], j))
 
-        pp_score = polsby_popper(d, gdf)
-        if pp_score < compactness_threshold:
-            logging.error(
-                f"Constraint Failed: District {dist_num} Polsby-Popper score is {pp_score:.3f}, "
-                f"below threshold of {compactness_threshold:.3f}."
-            )
-            return float("inf")
+            if adj_candidates:
+                # Pick the least populated of the adjacent districts.
+                adj_candidates.sort()
+                best_idx = adj_candidates[0][1]
+            else:
+                # Fallback 2 (Last Resort): The block is an island with no
+                # assigned neighbors. This should only happen at the start.
+                logging.warning(f"Block {block} is an island; using global least-populated fallback.")
+                best_idx = int(np.argmin(pop_per_district))
 
-        total_inertia += compute_inertia(d, gdf)
+        districts[best_idx].add(block)
+        pop_per_district[best_idx] += block_pop
 
-    return float(total_inertia)
+        if (i + 1) % 1000 == 0 or i == len(sweep_order) - 1:
+            logging.info(f"Assigned {i + 1} of {len(sweep_order)} blocks.")
+
+    return districts
