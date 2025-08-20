@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import numpy as np
 import networkx as nx
 from shapely.geometry import Polygon
@@ -37,15 +38,12 @@ def polsby_popper(district_blocks, gdf) -> float:
         area = union_geom.area
         perim = union_geom.length
         return float((4 * np.pi * area) / (perim ** 2)) if perim > 0 else 0.0
-    # For multi-polygons or non-polygonal results, you could consider union.buffer(0)
-    # and re-check, but we keep it simple/strict here.
     return 0.0
 
 
 def is_contiguous(district_blocks, G: nx.Graph) -> bool:
     """A district is contiguous if its induced subgraph is connected."""
     sub = G.subgraph(district_blocks)
-    # Empty or single-node districts are trivially connected only if size >= 1
     return nx.is_connected(sub) if sub.number_of_nodes() > 0 else False
 
 
@@ -59,27 +57,36 @@ def objective(
 ) -> float:
     """
     Objective to minimize: sum of moments of inertia across districts,
-    subject to:
-      - population within ±pop_tolerance_ratio of ideal_pop
-      - contiguity
-      - Polsby–Popper >= compactness_threshold
-    Returns +inf if any constraint is violated.
+    subject to constraints. Returns +inf if any constraint is violated.
     """
     total_inertia = 0.0
     pop_tol = ideal_pop * pop_tolerance_ratio
 
-    for d in districts:
+    for i, d in enumerate(districts):
+        dist_num = i + 1
         if not d:
+            logging.error(f"Constraint Failed: District {dist_num} is empty.")
             return float("inf")
 
         district_pop = sum(int(G.nodes[b]["pop"]) for b in d)
-        if not (ideal_pop - pop_tol <= district_pop <= ideal_pop + pop_tol):
+        min_pop, max_pop = ideal_pop - pop_tol, ideal_pop + pop_tol
+        if not (min_pop <= district_pop <= max_pop):
+            logging.error(
+                f"Constraint Failed: District {dist_num} population is {district_pop:,}, "
+                f"but must be between {min_pop:,.0f} and {max_pop:,.0f}."
+            )
             return float("inf")
 
         if not is_contiguous(d, G):
+            logging.error(f"Constraint Failed: District {dist_num} is not contiguous.")
             return float("inf")
 
-        if polsby_popper(d, gdf) < compactness_threshold:
+        pp_score = polsby_popper(d, gdf)
+        if pp_score < compactness_threshold:
+            logging.error(
+                f"Constraint Failed: District {dist_num} Polsby-Popper score is {pp_score:.3f}, "
+                f"below threshold of {compactness_threshold:.3f}."
+            )
             return float("inf")
 
         total_inertia += compute_inertia(d, gdf)
