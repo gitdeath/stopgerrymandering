@@ -65,13 +65,13 @@ This project solves the complex problem of creating political districts from a s
 
 ---
 ### 2. Graph Construction
-- **Technical Summary**: Using the merged GeoDataFrame, the program constructs an adjacency graph with `networkx`. Each census block is a node in the graph, and an edge is created between any two nodes whose corresponding blocks touch geographically. This graph mathematically represents the state's spatial layout.
+- **Technical Summary**: Using the merged GeoDataFrame, the program constructs an adjacency graph with `networkx`. Each census block is a node in the graph, and an edge is created between any two nodes whose corresponding blocks **intersect** geographically. This graph mathematically represents the state's spatial layout.
 - **Plain English Summary**: The program creates a "neighbor list" for every block on the map. It goes through the entire state and notes down every single block that touches another one. This creates a network of connections, like a social network but for geography.
 
 ---
 ### 3. Initial District Assignment
-- **Technical Summary**: The program iterates through every block in a deterministic "sweep" order. It uses a greedy algorithm to assign each block to the most suitable adjacent district, prioritizing districts with the lowest population while staying within the maximum population tolerance. This creates a complete, valid first draft of the district map.
-- **Plain English Summary**: The program starts with a blank map and a set of empty "buckets," one for each district. Following a fixed path across the state (e.g., top-to-bottom), it picks up each block one-by-one and places it into the best neighboring bucket that isn't too full yet.
+- **Technical Summary**: This is a two-phase hybrid process. In the **Seeding Phase**, the algorithm deterministically selects a set number of "seed" blocks by picking them at evenly spaced intervals from the geographically sorted list of all blocks. One seed is assigned to each of the districts. In the **Growth Phase**, the program iterates through the remaining blocks in the sweep order, using a greedy algorithm to assign each block to the most suitable *adjacent and growing* district.
+- **Plain English Summary**: Instead of starting at one corner of the state and filling in the map, the algorithm now begins by placing eight "anchor" pieces, spread evenly across the entire puzzle board. It then fills in the rest of the map by connecting new pieces to the closest growing anchor section. This ensures all districts are built up at the same time in a balanced way.
 
 ---
 ### 4. Optimization
