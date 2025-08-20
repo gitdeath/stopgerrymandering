@@ -6,8 +6,6 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "redistricting"
 version = "0.1.0"
-description = "Config-driven redistricting pipeline"
-authors = [{name="Your Name"}]
 requires-python = ">=3.10"
 dependencies = [
 "geopandas",
