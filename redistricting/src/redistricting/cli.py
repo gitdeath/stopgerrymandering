@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import Settings
 from .io import unzip_and_find_files, load_and_preprocess_data
 from .assign import initial_assignment
-from .optimize import optimize_districts
+from .optimize import fix_contiguity, rapid_balance, perfect_map
 from .metrics import polsby_popper
 from .viz import plot_districts
 
@@ -50,11 +50,12 @@ def setup_logging(debug: bool):
             logging.FileHandler(log_filename, mode='w'),
             logging.StreamHandler(sys.stdout)
         ],
-        force=True  # Ensures this configuration is applied
+        force=True
     )
 
     logging.info(f"Detailed log being saved to: {log_filename}")
-    
+
+
 def main():
     args = parse_args()
     setup_logging(args.debug)
@@ -66,7 +67,6 @@ def main():
     st = settings.states[scode]
     D = args.districts if args.districts else st.districts
 
-    # repo root (two levels up from this file: src/redistricting/cli.py → repo root)
     base_dir = Path(__file__).resolve().parents[2]
     paths = unzip_and_find_files(base_dir, st.fips, scode)
 
@@ -85,23 +85,30 @@ def main():
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
     )
 
-    final, score = optimize_districts(
-        initial,
-        gdf,
-        G,
-        ideal_pop,
+    # --- NEW THREE-STAGE OPTIMIZATION ---
+    logging.info("Starting Stage 1: Contiguity Repair...")
+    contiguous_map = fix_contiguity(initial, gdf, G)
+    
+    logging.info("Starting Stage 2: Rapid Balancing...")
+    balanced_map, _ = rapid_balance(
+        contiguous_map, gdf, G, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
-        compactness_threshold=settings.defaults.compactness_threshold,
+        compactness_threshold=settings.defaults.compactness_threshold
+    )
+
+    logging.info("Starting Stage 3: Final Perfecting...")
+    final_map, final_score = perfect_map(
+        balanced_map, gdf, G, ideal_pop,
+        pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
+        compactness_threshold=settings.defaults.compactness_threshold
     )
 
     # Tie-break / stable order
-    final_sorted = [sorted(list(d)) for d in final]
+    final_sorted = [sorted(list(d)) for d in final_map]
     final_sorted.sort()
 
-    # Visualization
     plot_districts(gdf, final_sorted, st.name, scode)
 
-    # Console summary
     final_pop_counts = [sum(G.nodes[b]["pop"] for b in d) for d in final_sorted]
     print("\n" + "=" * 50)
     print(f"Final District Map for {st.name} ({D} districts)")
@@ -112,13 +119,12 @@ def main():
             f"Polsby-Popper = {polsby_popper(final_sorted[i], gdf):.4f}"
         )
     print(f"\nTotal Population: {total_pop:,}")
-    print(f"Compactness Score (Σ J_d): {score:.2f}")
+    print(f"Final Score: {final_score:.2f}")
 
-    # JSON output
     out = {
         "state_code": scode,
         "districts": final_sorted,
-        "score": score,
+        "score": final_score,
         "total_population": total_pop,
         "ideal_population": ideal_pop,
         "final_population_counts": final_pop_counts,
