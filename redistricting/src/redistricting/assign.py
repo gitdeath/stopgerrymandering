@@ -30,16 +30,31 @@ def find_closest_district(block_coords, district_centroids):
     closest_dist = float('inf')
     best_idx = -1
     for idx, centroid in district_centroids.items():
-        dist = (block_coords[0] - centroid[0])**2 + (block_coords[1] - centroid[1])**2
-        if dist < closest_dist:
-            closest_dist = dist
+        dist_sq = (block_coords[0] - centroid[0])**2 + (block_coords[1] - centroid[1])**2
+        if dist_sq < closest_dist:
+            closest_dist = dist_sq
             best_idx = idx
     return best_idx
 
 
+def get_district_centroids(districts, block_coords_map, block_pop_map):
+    """Calculates the population-weighted centroid for each district."""
+    centroids = {}
+    for i, d in enumerate(districts):
+        if not d: continue
+        
+        total_pop = sum(block_pop_map[b] for b in d)
+        if total_pop == 0: continue
+
+        cx = sum(block_coords_map[b][0] * block_pop_map[b] for b in d) / total_pop
+        cy = sum(block_coords_map[b][1] * block_pop_map[b] for b in d) / total_pop
+        centroids[i] = (cx, cy)
+    return centroids
+
+
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Greedy initial assignment using a geographically aware, "right of first refusal" heuristic.
+    Greedy initial assignment using a cost function that balances population and compactness (inertia).
     """
     logging.info("Step 3 of 5: Generating initial district map...")
     
@@ -49,17 +64,12 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     
     all_blocks = get_sweep_order(gdf)
     block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
+    block_pop_map = {row.GEOID20: row.P1_001N for row in gdf.itertuples()}
 
-    # --- 1. SEEDING AND LOYALTY MAPPING ---
-    logging.info(f"Seeding {D} districts and determining block loyalties...")
+    # --- 1. SEEDING PHASE ---
+    logging.info(f"Seeding {D} districts...")
     seed_indices = np.linspace(0, len(all_blocks) - 1, D, dtype=int)
     seeds = [all_blocks[i] for i in seed_indices]
-    seed_coords = {i: block_coords_map[seed] for i, seed in enumerate(seeds)}
-
-    block_loyalty = {
-        block: find_closest_district(coords, seed_coords)
-        for block, coords in block_coords_map.items()
-    }
 
     for i, seed_block in enumerate(seeds):
         districts[i].add(seed_block)
@@ -67,46 +77,51 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     
     remaining_blocks = [b for b in all_blocks if b not in seeds]
     
-    logging.info("Seeding complete. Starting geographically-aware growth phase...")
+    logging.info("Seeding complete. Starting cost-function-based growth phase...")
     # --- 2. GROWTH PHASE ---
     total_to_assign = len(remaining_blocks)
     for i, block in enumerate(remaining_blocks):
         block_pop = int(G.nodes[block]["pop"])
+        block_coords = block_coords_map[block]
 
         adj_districts = {j for j in range(D) if any(G.has_edge(block, b) for b in districts[j])}
 
         if adj_districts:
-            home_district = block_loyalty[block]
-            
-            under_limit_neighbors = {
-                j for j in adj_districts if pop_per_district[j] + block_pop <= max_pop
-            }
+            candidate_districts = [j for j in adj_districts if pop_per_district[j] + block_pop <= max_pop]
 
-            best_idx = -1
-            if home_district in under_limit_neighbors:
-                # "Right of First Refusal": Assign to home district if it's a valid option.
-                best_idx = home_district
-            elif under_limit_neighbors:
-                # Home district is not a valid option; block becomes a "free agent."
-                # Assign to the least-populated valid neighbor.
-                best_idx = min(under_limit_neighbors, key=lambda d: pop_per_district[d])
+            if candidate_districts:
+                # --- COST FUNCTION HEURISTIC ---
+                # Score candidates to find the best choice.
+                candidates_with_scores = []
+                # Get current centroids to estimate inertia change
+                centroids = get_district_centroids(districts, block_coords_map, block_pop_map)
+
+                for j in candidate_districts:
+                    # Factor 1: Population Need (lower is better)
+                    pop_ratio = pop_per_district[j] / ideal_pop
+                    
+                    # Factor 2: Compactness Cost (lower is better)
+                    # Estimate the increase in inertia by adding this block
+                    centroid_x, centroid_y = centroids.get(j, block_coords) # Use block coords if district is empty
+                    inertia_cost = block_pop * ((block_coords[0] - centroid_x)**2 + (block_coords[1] - centroid_y)**2)
+                    
+                    # We store tuples for sorting: primary key is pop_ratio, secondary is inertia_cost
+                    candidates_with_scores.append((pop_ratio, inertia_cost, j))
+                
+                # Sort by pop_ratio, then by inertia_cost to break ties. Lowest score is best.
+                candidates_with_scores.sort()
+                best_idx = candidates_with_scores[0][2]
             else:
                 # All neighbors are full; relax pop constraint and assign to least-populated neighbor.
                 best_idx = min(adj_districts, key=lambda d: pop_per_district[d])
         else:
             # Fallback: True island. Use the geographic fallback.
             logging.warning(f"Block {block} is an island; using GEOGRAPHIC fallback.")
-            district_centroids = {}
-            for dist_idx, block_set in enumerate(districts):
-                if block_set:
-                    coords = [block_coords_map[b] for b in block_set]
-                    district_centroids[dist_idx] = (sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords))
-            
-            block_coords = block_coords_map[block]
-            best_idx = find_closest_district(block_coords, district_centroids) if district_centroids else 0
+            district_centroids = get_district_centroids(districts, block_coords_map, block_pop_map)
+            best_idx = find_closest_district(block_coords_map[block], district_centroids) if district_centroids else 0
 
         districts[best_idx].add(block)
-        pop_per_district[best_idx] += block_pop
+        pop_per_district[best_idx] += pop_per_district[best_idx] + block_pop
 
         if (i + 1) % 5000 == 0 or i == total_to_assign - 1:
             logging.info(f"Assigned {i + 1} of {total_to_assign} blocks.")
