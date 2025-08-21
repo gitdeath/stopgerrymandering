@@ -1,10 +1,138 @@
 from __future__ import annotations
 
 import logging
-from .metrics import objective
+import random
+from collections import Counter
+import networkx as nx
+
+from .metrics import objective, is_contiguous
 
 
-def optimize_districts(
+def fix_contiguity(
+    districts,
+    gdf,
+    G: nx.Graph,
+):
+    """
+    Stage 1: Finds and repairs non-contiguous districts by reassigning island blocks.
+    """
+    fixed_districts = [set(d) for d in districts]
+    membership = {b: i for i, d in enumerate(fixed_districts) for b in d}
+    
+    while True:
+        fixes_made = 0
+        for i, d in enumerate(fixed_districts):
+            if not d: continue
+            
+            subgraph = G.subgraph(d)
+            components = list(nx.connected_components(subgraph))
+            
+            if len(components) > 1:
+                # Identify the main component (largest) and islands
+                components.sort(key=len, reverse=True)
+                main_component = components[0]
+                islands = components[1:]
+                
+                for island in islands:
+                    for block in island:
+                        # Find neighbors of the island block in the full graph
+                        neighbors_in_main_graph = G.neighbors(block)
+                        
+                        # Find which districts these neighbors belong to
+                        neighbor_districts = [
+                            membership[n] for n in neighbors_in_main_graph if n in membership
+                        ]
+                        
+                        if neighbor_districts:
+                            # Reassign the block to the most common neighboring district
+                            most_common_neighbor_dist = Counter(neighbor_districts).most_common(1)[0][0]
+                            
+                            logging.warning(
+                                f"CONTIGUITY FIX: Moving block {block} from District {i+1} "
+                                f"to its neighbor, District {most_common_neighbor_dist+1}."
+                            )
+                            
+                            # Update district sets and membership map
+                            fixed_districts[i].remove(block)
+                            fixed_districts[most_common_neighbor_dist].add(block)
+                            membership[block] = most_common_neighbor_dist
+                            fixes_made += 1
+
+        if fixes_made == 0:
+            # Loop until a full pass makes no changes
+            break
+            
+    # Verify all districts are now contiguous
+    for i, d in enumerate(fixed_districts):
+        if not is_contiguous(d, G):
+            logging.error(f"FATAL: Could not fix contiguity for District {i+1}. Exiting.")
+            raise RuntimeError(f"Contiguity fix failed for District {i+1}")
+
+    logging.info("Contiguity repair complete.")
+    return fixed_districts
+
+
+def rapid_balance(
+    districts,
+    gdf,
+    G,
+    ideal_pop: float,
+    pop_tolerance_ratio: float,
+    compactness_threshold: float,
+    passes: int = 2,
+):
+    """
+    Stage 2: A faster, greedier optimization that applies good moves immediately.
+    """
+    current = [set(d) for d in districts]
+    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+    logging.info(f"Rapid balancing starting score: {current_score:.2f}")
+
+    all_blocks = list(G.nodes)
+    
+    for p in range(passes):
+        # Deterministically shuffle the order of blocks for each pass
+        random.Random(p).shuffle(all_blocks)
+        moves_made_in_pass = 0
+        
+        for i, block in enumerate(all_blocks):
+            membership = {b: i for i, d in enumerate(current) for b in d}
+            from_idx = membership.get(block)
+            if from_idx is None: continue
+
+            neighbor_districts = {
+                membership.get(n) for n in G.neighbors(block)
+                if membership.get(n) is not None and membership[n] != from_idx
+            }
+
+            for to_idx in neighbor_districts:
+                trial = [set(d) for d in current]
+                trial[from_idx].remove(block)
+                trial[to_idx].add(block)
+                
+                new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+
+                if new_score < current_score:
+                    # Apply the move immediately and update the state
+                    current = trial
+                    current_score = new_score
+                    moves_made_in_pass += 1
+                    # Break to move to the next block after finding one good move
+                    break 
+
+            if (i + 1) % 5000 == 0:
+                logging.info(f"Rapid balance pass {p+1}/{passes}: "
+                             f"scanned {i+1}/{len(all_blocks)} blocks, found {moves_made_in_pass} moves.")
+
+        logging.info(f"Rapid balance pass {p+1} complete. New score: {current_score:.2f}. "
+                     f"Total moves made: {moves_made_in_pass}")
+        if moves_made_in_pass == 0:
+            break # Stop early if a pass yields no improvements
+
+    return current, current_score
+
+
+def perfect_map(
     districts,
     gdf,
     G,
@@ -13,19 +141,11 @@ def optimize_districts(
     compactness_threshold: float,
 ):
     """
-    Greedy local search:
-      - Repeatedly try moving a block to an adjacent district if the move
-        improves the objective and all constraints remain satisfied.
-      - Stops when no improving move exists.
-    Returns: (final_districts, final_score)
+    Stage 3: The original, slow, and meticulous optimization to find the local optimum.
     """
-    logging.info("Step 4 of 5: Optimizing district map using a greedy approach...")
-
     current = [set(d) for d in districts]
-    current_score = objective(
-        current, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold
-    )
-    logging.info(f"Initial objective score: {current_score:.2f}")
+    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+    logging.info(f"Final perfecting starting score: {current_score:.2f}")
 
     iteration = 0
     while True:
@@ -33,36 +153,28 @@ def optimize_districts(
         best_move = None
         best_delta = 0.0
 
-        # Precompute membership: block -> district index
         membership = {b: i for i, d in enumerate(current) for b in d}
         all_blocks = list(G.nodes)
 
         for block in all_blocks:
             from_idx = membership.get(block)
-            if from_idx is None:
-                continue
+            if from_idx is None: continue
 
-            # Only consider districts that are neighbors of this block
             neighbor_districts = {
-                membership[n]
-                for n in G.neighbors(block)
+                membership.get(n) for n in G.neighbors(block)
                 if membership.get(n) is not None and membership[n] != from_idx
             }
 
             for to_idx in neighbor_districts:
                 trial = [set(d) for d in current]
-                # attempt move
                 trial[from_idx].remove(block)
                 trial[to_idx].add(block)
 
-                new_score = objective(
-                    trial, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold
-                )
-                if new_score < current_score:
-                    delta = current_score - new_score
-                    if delta > best_delta:
-                        best_delta = delta
-                        best_move = (block, from_idx, to_idx)
+                new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+                delta = current_score - new_score
+                if delta > best_delta:
+                    best_delta = delta
+                    best_move = (block, from_idx, to_idx)
 
         if best_move:
             b, fidx, tidx = best_move
@@ -70,11 +182,11 @@ def optimize_districts(
             current[tidx].add(b)
             current_score -= best_delta
             logging.info(
-                f"Iteration {iteration}: Applied best move; new score {current_score:.2f}"
+                f"Perfecting Iteration {iteration}: Applied best move; new score {current_score:.2f}"
             )
         else:
             logging.info(
-                f"Iteration {iteration}: No further improvements found. Optimization complete."
+                f"Perfecting Iteration {iteration}: No further improvements found. Optimization complete."
             )
             break
 
