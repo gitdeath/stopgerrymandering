@@ -36,6 +36,14 @@ def polsby_popper(district_blocks, gdf) -> float:
     return 0.0
 
 
+def is_contiguous(district_blocks, G: nx.Graph) -> bool:
+    """A district is contiguous if its induced subgraph is connected."""
+    if not district_blocks:
+        return False
+    sub = G.subgraph(district_blocks)
+    return nx.is_connected(sub)
+
+
 def objective(
     districts,
     gdf,
@@ -52,8 +60,6 @@ def objective(
     population_penalty = 0.0
     contiguity_penalty = 0.0
     
-    # Define huge weights to prioritize fixing errors over optimizing compactness.
-    # Contiguity is the most critical, so it gets the largest weight.
     CONTIGUITY_PENALTY_WEIGHT = 1e18
     POPULATION_PENALTY_WEIGHT = 1e15
 
@@ -61,14 +67,15 @@ def objective(
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
 
     for i, d in enumerate(districts):
-        if not d: # Skip empty districts; they will be penalized by population.
+        if not d:
+            # Penalize empty districts heavily via the population penalty
+            population_penalty += min_pop ** 2
             continue
         
         # --- 1. Contiguity Penalty (Highest Priority) ---
         sub = G.subgraph(d)
         num_components = nx.number_connected_components(sub)
         if num_components > 1:
-            # The penalty is for each *extra* component.
             contiguity_penalty += (num_components - 1)
 
         # --- 2. Population Penalty (Second Priority) ---
@@ -79,15 +86,9 @@ def objective(
             population_penalty += (district_pop - max_pop) ** 2
         
         # --- 3. Compactness Score (Base Score) ---
-        # Only add to the score if the district is valid so far
         if num_components == 1:
             total_inertia += compute_inertia(d, gdf)
         
-        # You could also add a hard floor for compactness if desired,
-        # but the penalties should guide it to a valid solution first.
-        # if polsby_popper(d, gdf) < compactness_threshold:
-        #     return float('inf') # Or add a third, smaller penalty
-
     final_score = (
         total_inertia +
         (population_penalty * POPULATION_PENALTY_WEIGHT) +
