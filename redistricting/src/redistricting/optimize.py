@@ -17,9 +17,9 @@ def fix_contiguity(
     Stage 1: Finds and repairs non-contiguous districts by reassigning island blocks.
     """
     fixed_districts = [set(d) for d in districts]
-    membership = {b: i for i, d in enumerate(fixed_districts) for b in d}
     
     while True:
+        membership = {b: i for i, d in enumerate(fixed_districts) for b in d}
         fixes_made = 0
         for i, d in enumerate(fixed_districts):
             if not d: continue
@@ -28,23 +28,21 @@ def fix_contiguity(
             components = list(nx.connected_components(subgraph))
             
             if len(components) > 1:
-                # Identify the main component (largest) and islands
                 components.sort(key=len, reverse=True)
                 main_component = components[0]
                 islands = components[1:]
                 
                 for island in islands:
                     for block in island:
-                        # Find neighbors of the island block in the full graph
                         neighbors_in_main_graph = G.neighbors(block)
                         
-                        # Find which districts these neighbors belong to
+                        # *** THE FIX IS HERE: Filter out neighbors from the same district (i) ***
                         neighbor_districts = [
-                            membership[n] for n in neighbors_in_main_graph if n in membership
+                            membership[n] for n in neighbors_in_main_graph 
+                            if n in membership and membership[n] != i
                         ]
                         
                         if neighbor_districts:
-                            # Reassign the block to the most common neighboring district
                             most_common_neighbor_dist = Counter(neighbor_districts).most_common(1)[0][0]
                             
                             logging.warning(
@@ -52,17 +50,15 @@ def fix_contiguity(
                                 f"to its neighbor, District {most_common_neighbor_dist+1}."
                             )
                             
-                            # Update district sets and membership map
                             fixed_districts[i].remove(block)
                             fixed_districts[most_common_neighbor_dist].add(block)
-                            membership[block] = most_common_neighbor_dist
+                            # No need to update full membership map here, will be rebuilt on next pass
                             fixes_made += 1
 
         if fixes_made == 0:
-            # Loop until a full pass makes no changes
             break
             
-    # Verify all districts are now contiguous
+    # Final verification
     for i, d in enumerate(fixed_districts):
         if not is_contiguous(d, G):
             logging.error(f"FATAL: Could not fix contiguity for District {i+1}. Exiting.")
@@ -91,7 +87,6 @@ def rapid_balance(
     all_blocks = list(G.nodes)
     
     for p in range(passes):
-        # Deterministically shuffle the order of blocks for each pass
         random.Random(p).shuffle(all_blocks)
         moves_made_in_pass = 0
         
@@ -113,11 +108,9 @@ def rapid_balance(
                 new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
 
                 if new_score < current_score:
-                    # Apply the move immediately and update the state
                     current = trial
                     current_score = new_score
                     moves_made_in_pass += 1
-                    # Break to move to the next block after finding one good move
                     break 
 
             if (i + 1) % 5000 == 0:
@@ -127,7 +120,7 @@ def rapid_balance(
         logging.info(f"Rapid balance pass {p+1} complete. New score: {current_score:.2f}. "
                      f"Total moves made: {moves_made_in_pass}")
         if moves_made_in_pass == 0:
-            break # Stop early if a pass yields no improvements
+            break
 
     return current, current_score
 
