@@ -10,7 +10,7 @@ from .config import Settings
 from .io import unzip_and_find_files, load_and_preprocess_data
 from .assign import initial_assignment
 from .optimize import fix_contiguity, rapid_balance, perfect_map
-from .metrics import polsby_popper
+from .metrics import polsby_popper, is_contiguous
 from .viz import plot_districts
 
 
@@ -56,6 +56,25 @@ def setup_logging(debug: bool):
     logging.info(f"Detailed log being saved to: {log_filename}")
 
 
+def print_debug_stats(phase_name: str, districts, gdf, G):
+    """Helper function to print district stats during debug runs."""
+    print("\n" + "-" * 20 + f" DEBUG STATS: After {phase_name} " + "-" * 20)
+    for i, d in enumerate(districts):
+        if not d:
+            print(f"District {i+1}: EMPTY")
+            continue
+            
+        d_pop = sum(G.nodes[b]["pop"] for b in d)
+        d_pp = polsby_popper(d, gdf)
+        d_contig = is_contiguous(d, G)
+        print(
+            f"District {i+1}: Pop = {d_pop:<9,} | "
+            f"Polsby-Popper = {d_pp:.4f} | "
+            f"Contiguous = {d_contig}"
+        )
+    print("-" * (42 + len(phase_name)) + "\n")
+
+
 def main():
     args = parse_args()
     setup_logging(args.debug)
@@ -86,11 +105,13 @@ def main():
     )
     if args.debug:
         plot_districts(gdf, initial, st.name, scode, output_filename=f"debug_1_initial_{scode}.png")
+        print_debug_stats("Initial Assignment", initial, gdf, G)
 
     logging.info("Starting Stage 1: Contiguity Repair...")
     contiguous_map = fix_contiguity(initial, gdf, G)
     if args.debug:
         plot_districts(gdf, contiguous_map, st.name, scode, output_filename=f"debug_2_contiguous_{scode}.png")
+        print_debug_stats("Contiguity Repair", contiguous_map, gdf, G)
     
     logging.info("Starting Stage 2: Rapid Balancing...")
     balanced_map, _ = rapid_balance(
@@ -100,6 +121,7 @@ def main():
     )
     if args.debug:
         plot_districts(gdf, balanced_map, st.name, scode, output_filename=f"debug_3_balanced_{scode}.png")
+        print_debug_stats("Rapid Balancing", balanced_map, gdf, G)
 
     logging.info("Starting Stage 3: Final Perfecting...")
     final_map, final_score = perfect_map(
@@ -111,7 +133,6 @@ def main():
     final_sorted = [sorted(list(d)) for d in final_map]
     final_sorted.sort()
     
-    # Always save the final map
     plot_districts(gdf, final_sorted, st.name, scode, output_filename=f"districts_{scode}.png")
 
     final_pop_counts = [sum(G.nodes[b]["pop"] for b in d) for d in final_sorted]
