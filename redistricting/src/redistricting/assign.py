@@ -39,56 +39,60 @@ def find_closest_district(block_coords, district_centroids):
 
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Greedy initial assignment using a contiguity-first, seed-then-grow approach.
+    Greedy initial assignment using a geographically aware, "right of first refusal" heuristic.
     """
     logging.info("Step 3 of 5: Generating initial district map...")
     
     districts = [set() for _ in range(D)]
     pop_per_district = np.zeros(D)
-    pop_tol = ideal_pop * pop_tolerance_ratio
-    max_pop = ideal_pop + pop_tol
+    max_pop = ideal_pop * (1 + pop_tolerance_ratio)
     
-    remaining_blocks = get_sweep_order(gdf)
+    all_blocks = get_sweep_order(gdf)
     block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
 
-    # --- 1. SEEDING PHASE ---
-    logging.info(f"Seeding {D} districts...")
-    seed_indices = np.linspace(0, len(remaining_blocks) - 1, D, dtype=int)
-    seeds = [remaining_blocks[i] for i in seed_indices]
+    # --- 1. SEEDING AND LOYALTY MAPPING ---
+    logging.info(f"Seeding {D} districts and determining block loyalties...")
+    seed_indices = np.linspace(0, len(all_blocks) - 1, D, dtype=int)
+    seeds = [all_blocks[i] for i in seed_indices]
+    seed_coords = {i: block_coords_map[seed] for i, seed in enumerate(seeds)}
 
-    for i in range(D):
-        seed_block = seeds[i]
+    block_loyalty = {
+        block: find_closest_district(coords, seed_coords)
+        for block, coords in block_coords_map.items()
+    }
+
+    for i, seed_block in enumerate(seeds):
         districts[i].add(seed_block)
         pop_per_district[i] += G.nodes[seed_block]["pop"]
     
-    for i in sorted(seed_indices, reverse=True):
-        del remaining_blocks[i]
+    remaining_blocks = [b for b in all_blocks if b not in seeds]
     
-    logging.info("Seeding complete. Starting growth phase...")
+    logging.info("Seeding complete. Starting geographically-aware growth phase...")
     # --- 2. GROWTH PHASE ---
     total_to_assign = len(remaining_blocks)
     for i, block in enumerate(remaining_blocks):
         block_pop = int(G.nodes[block]["pop"])
 
-        # Find all adjacent districts
-        adj_districts = []
-        for j in range(D):
-            if any(G.has_edge(block, b) for b in districts[j]):
-                adj_districts.append((pop_per_district[j], j))
+        adj_districts = {j for j in range(D) if any(G.has_edge(block, b) for b in districts[j])}
 
         if adj_districts:
-            # From the adjacent districts, find the ones that are not full
-            under_limit_neighbors = [d for d in adj_districts if d[0] + block_pop <= max_pop]
+            home_district = block_loyalty[block]
+            
+            under_limit_neighbors = {
+                j for j in adj_districts if pop_per_district[j] + block_pop <= max_pop
+            }
 
-            if under_limit_neighbors:
-                # If there are non-full neighbors, pick the one with the smallest population
-                under_limit_neighbors.sort()
-                best_idx = under_limit_neighbors[0][1]
+            best_idx = -1
+            if home_district in under_limit_neighbors:
+                # "Right of First Refusal": Assign to home district if it's a valid option.
+                best_idx = home_district
+            elif under_limit_neighbors:
+                # Home district is not a valid option; block becomes a "free agent."
+                # Assign to the least-populated valid neighbor.
+                best_idx = min(under_limit_neighbors, key=lambda d: pop_per_district[d])
             else:
-                # If all adjacent neighbors are full, relax the pop constraint to maintain contiguity
-                # and pick the one with the smallest population.
-                adj_districts.sort()
-                best_idx = adj_districts[0][1]
+                # All neighbors are full; relax pop constraint and assign to least-populated neighbor.
+                best_idx = min(adj_districts, key=lambda d: pop_per_district[d])
         else:
             # Fallback: True island. Use the geographic fallback.
             logging.warning(f"Block {block} is an island; using GEOGRAPHIC fallback.")
