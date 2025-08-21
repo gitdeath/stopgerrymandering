@@ -10,7 +10,7 @@ from .config import Settings
 from .io import unzip_and_find_files, load_and_preprocess_data
 from .assign import initial_assignment
 from .optimize import fix_contiguity, rapid_balance, perfect_map
-from .metrics import polsby_popper, is_contiguous
+from .metrics import polsby_popper, is_contiguous, compute_inertia
 from .viz import plot_districts
 
 
@@ -58,7 +58,9 @@ def setup_logging(debug: bool):
 
 def print_debug_stats(phase_name: str, districts, gdf, G):
     """Helper function to print district stats during debug runs."""
-    print("\n" + "-" * 20 + f" DEBUG STATS: After {phase_name} " + "-" * 20)
+    header = f" DEBUG STATS: After {phase_name} "
+    print("\n" + header.center(80, "-"))
+    
     for i, d in enumerate(districts):
         if not d:
             print(f"District {i+1}: EMPTY")
@@ -66,13 +68,15 @@ def print_debug_stats(phase_name: str, districts, gdf, G):
             
         d_pop = sum(G.nodes[b]["pop"] for b in d)
         d_pp = polsby_popper(d, gdf)
+        d_inertia = compute_inertia(d, gdf)
         d_contig = is_contiguous(d, G)
         print(
             f"District {i+1}: Pop = {d_pop:<9,} | "
-            f"Polsby-Popper = {d_pp:.4f} | "
+            f"PP = {d_pp:.4f} | "
+            f"Inertia = {d_inertia:.2e} | "
             f"Contiguous = {d_contig}"
         )
-    print("-" * (42 + len(phase_name)) + "\n")
+    print("-" * 80 + "\n")
 
 
 def main():
