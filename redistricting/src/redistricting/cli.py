@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable detailed debugging output.",
+        help="Enable detailed debugging output and save intermediate maps.",
     )
     return parser.parse_args()
 
@@ -84,10 +84,13 @@ def main():
         ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
     )
+    if args.debug:
+        plot_districts(gdf, initial, st.name, scode, output_filename=f"debug_1_initial_{scode}.png")
 
-    # --- NEW THREE-STAGE OPTIMIZATION ---
     logging.info("Starting Stage 1: Contiguity Repair...")
     contiguous_map = fix_contiguity(initial, gdf, G)
+    if args.debug:
+        plot_districts(gdf, contiguous_map, st.name, scode, output_filename=f"debug_2_contiguous_{scode}.png")
     
     logging.info("Starting Stage 2: Rapid Balancing...")
     balanced_map, _ = rapid_balance(
@@ -95,6 +98,8 @@ def main():
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
         compactness_threshold=settings.defaults.compactness_threshold
     )
+    if args.debug:
+        plot_districts(gdf, balanced_map, st.name, scode, output_filename=f"debug_3_balanced_{scode}.png")
 
     logging.info("Starting Stage 3: Final Perfecting...")
     final_map, final_score = perfect_map(
@@ -103,11 +108,11 @@ def main():
         compactness_threshold=settings.defaults.compactness_threshold
     )
 
-    # Tie-break / stable order
     final_sorted = [sorted(list(d)) for d in final_map]
     final_sorted.sort()
-
-    plot_districts(gdf, final_sorted, st.name, scode)
+    
+    # Always save the final map
+    plot_districts(gdf, final_sorted, st.name, scode, output_filename=f"districts_{scode}.png")
 
     final_pop_counts = [sum(G.nodes[b]["pop"] for b in d) for d in final_sorted]
     print("\n" + "=" * 50)
