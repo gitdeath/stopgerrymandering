@@ -39,23 +39,19 @@ def find_closest_district(block_coords, district_centroids):
 
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Greedy initial assignment of blocks to districts with adjacency + pop guardrails.
-    Uses a hybrid seed-then-grow approach.
+    Greedy initial assignment using a contiguity-first, seed-then-grow approach.
     """
     logging.info("Step 3 of 5: Generating initial district map...")
     
     districts = [set() for _ in range(D)]
     pop_per_district = np.zeros(D)
     pop_tol = ideal_pop * pop_tolerance_ratio
+    max_pop = ideal_pop + pop_tol
     
-    # Create a mutable list of all blocks to be assigned
     remaining_blocks = get_sweep_order(gdf)
-    
-    # Pre-calculate block coordinates for quick lookups
     block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
 
     # --- 1. SEEDING PHASE ---
-    # Deterministically pick D seed blocks spread evenly across the sweep order.
     logging.info(f"Seeding {D} districts...")
     seed_indices = np.linspace(0, len(remaining_blocks) - 1, D, dtype=int)
     seeds = [remaining_blocks[i] for i in seed_indices]
@@ -65,8 +61,6 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         districts[i].add(seed_block)
         pop_per_district[i] += G.nodes[seed_block]["pop"]
     
-    # Remove the seed blocks from the list of blocks to assign
-    # Iterate backwards to avoid index shifting issues
     for i in sorted(seed_indices, reverse=True):
         del remaining_blocks[i]
     
@@ -76,44 +70,41 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     for i, block in enumerate(remaining_blocks):
         block_pop = int(G.nodes[block]["pop"])
 
-        candidates = []
+        # Find all adjacent districts
+        adj_districts = []
         for j in range(D):
-            # A district is a candidate if the block is adjacent and pop is within tolerance
             if any(G.has_edge(block, b) for b in districts[j]):
-                if (pop_per_district[j] + block_pop <= ideal_pop + pop_tol):
-                    candidates.append((pop_per_district[j], j))
+                adj_districts.append((pop_per_district[j], j))
 
-        if candidates:
-            candidates.sort() # Prefer smallest population
-            best_idx = candidates[0][1]
-        else:
-            # Fallback 1: No ideal candidates. Relax pop constraint, require adjacency.
-            adj_candidates = []
-            for j in range(D):
-                if any(G.has_edge(block, b) for b in districts[j]):
-                    adj_candidates.append((pop_per_district[j], j))
+        if adj_districts:
+            # From the adjacent districts, find the ones that are not full
+            under_limit_neighbors = [d for d in adj_districts if d[0] + block_pop <= max_pop]
 
-            if adj_candidates:
-                adj_candidates.sort()
-                best_idx = adj_candidates[0][1]
+            if under_limit_neighbors:
+                # If there are non-full neighbors, pick the one with the smallest population
+                under_limit_neighbors.sort()
+                best_idx = under_limit_neighbors[0][1]
             else:
-                # Fallback 2: True island. Use geographic fallback.
-                logging.warning(f"Block {block} is an island; using GEOGRAPHIC fallback.")
-                district_centroids = {}
-                for dist_idx, block_set in enumerate(districts):
-                    if block_set:
-                        coords = [block_coords_map[b] for b in block_set]
-                        centroid_x = sum(c[0] for c in coords) / len(coords)
-                        centroid_y = sum(c[1] for c in coords) / len(coords)
-                        district_centroids[dist_idx] = (centroid_x, centroid_y)
-                
-                block_coords = block_coords_map[block]
-                best_idx = find_closest_district(block_coords, district_centroids)
+                # If all adjacent neighbors are full, relax the pop constraint to maintain contiguity
+                # and pick the one with the smallest population.
+                adj_districts.sort()
+                best_idx = adj_districts[0][1]
+        else:
+            # Fallback: True island. Use the geographic fallback.
+            logging.warning(f"Block {block} is an island; using GEOGRAPHIC fallback.")
+            district_centroids = {}
+            for dist_idx, block_set in enumerate(districts):
+                if block_set:
+                    coords = [block_coords_map[b] for b in block_set]
+                    district_centroids[dist_idx] = (sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords))
+            
+            block_coords = block_coords_map[block]
+            best_idx = find_closest_district(block_coords, district_centroids) if district_centroids else 0
 
         districts[best_idx].add(block)
         pop_per_district[best_idx] += block_pop
 
-        if (i + 1) % 1000 == 0 or i == total_to_assign -1:
+        if (i + 1) % 5000 == 0 or i == total_to_assign - 1:
             logging.info(f"Assigned {i + 1} of {total_to_assign} blocks.")
 
     return districts
