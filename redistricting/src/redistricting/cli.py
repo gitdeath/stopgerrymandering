@@ -41,13 +41,20 @@ def parse_args():
 
 
 def setup_logging(debug: bool):
+    log_filename = "redistricting_run.log"
+    
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[
+            logging.FileHandler(log_filename, mode='w'),
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True  # Ensures this configuration is applied
     )
 
-
+    logging.info(f"Detailed log being saved to: {log_filename}")
+    
 def main():
     args = parse_args()
     setup_logging(args.debug)
