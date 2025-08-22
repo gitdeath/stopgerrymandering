@@ -19,15 +19,20 @@ def plot_districts(
     gdf = gdf.copy()
     gdf["district"] = -1
     for i, d in enumerate(final_districts):
-        gdf.loc[gdf["GEOID20"].isin(d), "district"] = i + 1
+        # Ensure d is a list or set of GEOID20s before using .isin
+        district_blocks = list(d)
+        gdf.loc[gdf["GEOID20"].isin(district_blocks), "district"] = i + 1
 
     fig, ax = plt.subplots(figsize=(10, 10))
     gdf.plot(column="district", cmap="tab20", ax=ax, legend=True)
     
     # Determine the title and filename
     if "debug" in (output_filename or ""):
-        phase_name = output_filename.split('_')[1].capitalize()
-        plt.title(f"District Map for {state_name} (After {phase_name})")
+        try:
+            phase_name = output_filename.split('_')[1].capitalize()
+            plt.title(f"District Map for {state_name} (After {phase_name})")
+        except IndexError:
+            plt.title(f"Debug District Map for {state_name}")
     else:
         plt.title(f"Final District Map for {state_name}")
 
