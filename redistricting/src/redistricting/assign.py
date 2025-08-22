@@ -4,67 +4,75 @@ import logging
 import pandas as pd
 import numpy as np
 
+
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Builds districts one at a time using a faster, inertia-guided growth algorithm.
+    Builds districts simultaneously using an inertia-guided, competitive region-growing algorithm.
     """
-    logging.info("Step 3 of 5: Generating initial district map using Inertia-Guided Growth...")
+    logging.info("Step 3 of 5: Generating initial district map using Competitive Growth...")
     
     districts = [set() for _ in range(D)]
     unassigned_blocks = set(gdf["GEOID20"])
-    min_pop = ideal_pop * (1 - pop_tolerance_ratio)
+    max_pop = ideal_pop * (1 + pop_tolerance_ratio)
     
     # Pre-calculate data for performance
     block_pop_map = {row.GEOID20: int(row.P1_001N) for row in gdf.itertuples()}
     block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
     
-    for i in range(D - 1):
-        logging.info(f"--- Building District {i+1}/{D} ---")
+    # --- 1. SEEDING PHASE ---
+    logging.info(f"Seeding {D} districts...")
+    # Find seeds only from populated blocks
+    populated_gdf = gdf[gdf["P1_001N"] > 0]
+    sorted_populated = populated_gdf.sort_values(by=["y", "x"], ascending=[False, True])
+    
+    if len(sorted_populated) < D:
+        raise ValueError("Not enough populated blocks to seed all districts.")
         
-        # --- 1. Find the Seed Block (Cardinal Direction from POPULATED blocks) ---
-        remaining_gdf = gdf[gdf["GEOID20"].isin(unassigned_blocks)]
-        
-        # *** THE FIX IS HERE: Only consider blocks with population > 0 for seeding ***
-        populated_remaining_gdf = remaining_gdf[remaining_gdf["P1_001N"] > 0]
-        
-        if populated_remaining_gdf.empty:
-            logging.warning("No populated blocks remaining to seed a new district. Stopping early.")
-            break
-            
-        # Sort to find the Northwest-most block of the remaining populated territory
-        sorted_remaining = populated_remaining_gdf.sort_values(by=["y", "x"], ascending=[False, True])
-        seed_block = sorted_remaining.iloc[0]["GEOID20"]
-        
-        # --- 2. Grow the District ---
-        current_district_blocks = {seed_block}
-        unassigned_blocks.remove(seed_block)
-        
-        current_pop = block_pop_map[seed_block]
-        current_pop_x = block_coords_map[seed_block][0] * current_pop
-        current_pop_y = block_coords_map[seed_block][1] * current_pop
+    seed_indices = np.linspace(0, len(sorted_populated) - 1, D, dtype=int)
+    seeds = [sorted_populated.iloc[i]["GEOID20"] for i in seed_indices]
 
-        while current_pop < min_pop:
+    for i, seed_block in enumerate(seeds):
+        districts[i].add(seed_block)
+        unassigned_blocks.remove(seed_block)
+    
+    pop_per_district = np.array([sum(block_pop_map.get(b,0) for b in d) for d in districts])
+    
+    logging.info("Seeding complete. Starting competitive growth phase...")
+    # --- 2. COMPETITIVE GROWTH PHASE ---
+    districts_at_max_pop = [False] * D
+    
+    while unassigned_blocks:
+        for i in range(D):
+            if districts_at_max_pop[i]:
+                continue
+
+            # Find the frontier for the current district
             frontier = {
                 neighbor
-                for block in current_district_blocks
+                for block in districts[i]
                 for neighbor in G.neighbors(block)
                 if neighbor in unassigned_blocks
             }
 
             if not frontier:
-                logging.warning(f"District {i+1} ran out of neighbors before reaching target pop.")
-                break
+                continue # Skip if this district can't expand
 
-            centroid_x = current_pop_x / current_pop
-            centroid_y = current_pop_y / current_pop
-
+            # --- Inertia Heuristic ---
+            # Calculate current centroid
+            current_pop = pop_per_district[i]
+            if current_pop == 0: continue
+            
+            pop_x = sum(block_coords_map[b][0] * block_pop_map[b] for b in districts[i])
+            pop_y = sum(block_coords_map[b][1] * block_pop_map[b] for b in districts[i])
+            centroid_x, centroid_y = pop_x / current_pop, pop_y / current_pop
+            
+            # Find the best block on the frontier to add to this district
             best_block_to_add = None
             lowest_inertia_gain = float('inf')
 
             for frontier_block in frontier:
                 pop = block_pop_map[frontier_block]
                 coords = block_coords_map[frontier_block]
-                
                 dist_sq = (coords[0] - centroid_x)**2 + (coords[1] - centroid_y)**2
                 inertia_gain = pop * dist_sq
                 
@@ -74,30 +82,19 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
             
             if best_block_to_add:
                 pop_to_add = block_pop_map[best_block_to_add]
-                coords_to_add = block_coords_map[best_block_to_add]
-
-                current_district_blocks.add(best_block_to_add)
-                unassigned_blocks.remove(best_block_to_add)
                 
-                current_pop += pop_to_add
-                current_pop_x += coords_to_add[0] * pop_to_add
-                current_pop_y += coords_to_add[1] * pop_to_add
+                # Add the block and update state
+                districts[i].add(best_block_to_add)
+                unassigned_blocks.remove(best_block_to_add)
+                pop_per_district[i] += pop_to_add
 
-                if len(current_district_blocks) % 2000 == 0:
-                    logging.info(f"   ... District {i+1} has grown to {len(current_district_blocks)} blocks, "
-                                 f"pop: {current_pop:,}")
-            else:
-                logging.warning(f"Could not find a best block for District {i+1}, growth stalled.")
-                break
-        
-        districts[i] = current_district_blocks
-        logging.info(f"District {i+1} complete with population {current_pop:,}.")
+                # Check if this district is now full
+                if pop_per_district[i] >= max_pop:
+                    districts_at_max_pop[i] = True
+                    logging.info(f"District {i+1} has reached its population cap.")
 
-    # --- 3. The Final District ---
-    final_district_idx = D - 1
-    districts[final_district_idx] = unassigned_blocks
-    final_pop = sum(block_pop_map.get(b, 0) for b in unassigned_blocks)
-    logging.info(f"--- Building District {D}/{D} ---")
-    logging.info(f"District {D} complete with remaining {len(unassigned_blocks)} blocks and population {final_pop:,}.")
-
+        if (len(all_blocks) - len(unassigned_blocks)) % 5000 < D:
+             logging.info(f"Assigned {len(all_blocks) - len(unassigned_blocks)} / {len(all_blocks)} blocks...")
+             
+    logging.info("Initial assignment complete.")
     return [list(d) for d in districts]
