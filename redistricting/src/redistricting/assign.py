@@ -4,8 +4,6 @@ import logging
 import pandas as pd
 import numpy as np
 
-# Removed the direct import of compute_inertia as we are using a faster, inline heuristic
-
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
     Builds districts one at a time using a faster, inertia-guided growth algorithm.
@@ -23,14 +21,18 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     for i in range(D - 1):
         logging.info(f"--- Building District {i+1}/{D} ---")
         
-        # --- 1. Find the Seed Block (Cardinal Direction) ---
+        # --- 1. Find the Seed Block (Cardinal Direction from POPULATED blocks) ---
         remaining_gdf = gdf[gdf["GEOID20"].isin(unassigned_blocks)]
-        sorted_remaining = remaining_gdf.sort_values(by=["y", "x"], ascending=[False, True])
         
-        if sorted_remaining.empty:
-            logging.warning(f"No more blocks to assign, stopping at District {i}.")
+        # *** THE FIX IS HERE: Only consider blocks with population > 0 for seeding ***
+        populated_remaining_gdf = remaining_gdf[remaining_gdf["P1_001N"] > 0]
+        
+        if populated_remaining_gdf.empty:
+            logging.warning("No populated blocks remaining to seed a new district. Stopping early.")
             break
             
+        # Sort to find the Northwest-most block of the remaining populated territory
+        sorted_remaining = populated_remaining_gdf.sort_values(by=["y", "x"], ascending=[False, True])
         seed_block = sorted_remaining.iloc[0]["GEOID20"]
         
         # --- 2. Grow the District ---
@@ -38,7 +40,6 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         unassigned_blocks.remove(seed_block)
         
         current_pop = block_pop_map[seed_block]
-        # Keep track of weighted sums for fast centroid calculation
         current_pop_x = block_coords_map[seed_block][0] * current_pop
         current_pop_y = block_coords_map[seed_block][1] * current_pop
 
@@ -54,8 +55,6 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                 logging.warning(f"District {i+1} ran out of neighbors before reaching target pop.")
                 break
 
-            # --- FASTER HEURISTIC ---
-            # Calculate the current district's centroid once
             centroid_x = current_pop_x / current_pop
             centroid_y = current_pop_y / current_pop
 
@@ -66,7 +65,6 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                 pop = block_pop_map[frontier_block]
                 coords = block_coords_map[frontier_block]
                 
-                # Estimate inertia gain relative to the *current* centroid. This is a fast proxy.
                 dist_sq = (coords[0] - centroid_x)**2 + (coords[1] - centroid_y)**2
                 inertia_gain = pop * dist_sq
                 
@@ -81,12 +79,10 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                 current_district_blocks.add(best_block_to_add)
                 unassigned_blocks.remove(best_block_to_add)
                 
-                # Update population and weighted sums for next centroid calculation
                 current_pop += pop_to_add
                 current_pop_x += coords_to_add[0] * pop_to_add
                 current_pop_y += coords_to_add[1] * pop_to_add
 
-                # --- NEW PROGRESS LOGGING ---
                 if len(current_district_blocks) % 2000 == 0:
                     logging.info(f"   ... District {i+1} has grown to {len(current_district_blocks)} blocks, "
                                  f"pop: {current_pop:,}")
