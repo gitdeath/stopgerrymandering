@@ -40,17 +40,6 @@ class Settings:
     def load(path: str | Path) -> "Settings":
         """
         Load configuration from YAML or JSON.
-
-        Layout example (YAML):
-        ---
-        defaults:
-          crs_epsg: 26915
-          pop_tolerance_ratio: 0.005
-          compactness_threshold: 0.20
-          progress_interval: 5000
-        states:
-          MO: { fips: '29', name: 'Missouri', districts: 8 }
-          CA: { fips: '06', name: 'California', districts: 52 }
         """
         p = Path(path)
         if not p.exists():
