@@ -52,11 +52,13 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
             logging.info("Main contiguity pass complete. No more large islands found.")
             break
             
-    # --- Final Smoothing/Cleanup Pass (THE NEW FIX) ---
+    # --- Final Smoothing/Cleanup Pass ---
     logging.info("Starting final contiguity cleanup pass...")
-    all_blocks = list(G.nodes())
     smoothed_districts = [set(d) for d in current_districts]
     membership = {block: i for i, dist in enumerate(smoothed_districts) for block in dist}
+    
+    # Iterate over a sorted list for determinism
+    all_blocks = sorted(list(G.nodes()))
     
     for block in all_blocks:
         current_district_idx = membership.get(block)
@@ -68,10 +70,9 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
         most_common_neighbor = Counter(neighbor_districts).most_common(1)[0][0]
 
         if current_district_idx != most_common_neighbor:
-            # Check to ensure the move doesn't break the source district's contiguity
             source_district = smoothed_districts[current_district_idx]
             if len(source_district) > 1 and not is_contiguous(source_district - {block}, G):
-                continue # Skip move if it would create a new problem
+                continue 
 
             logging.warning(f"SMOOTHING: Reassigning rogue block {block} from D{current_district_idx+1} to majority neighbor D{most_common_neighbor+1}.")
             smoothed_districts[current_district_idx].remove(block)
@@ -88,84 +89,94 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
 
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
-    """Stage 2: A powerful balancer that moves contiguous chunks of population."""
+    """
+    Stage 2: A powerful, resilient balancer that searches for a valid chunk to move
+    without breaking district contiguity.
+    """
     current = [set(d) for d in districts]
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
     
-    for i in range(200): # Limit iterations to prevent infinite loops
+    MAX_BALANCER_ITERATIONS = 200
+    for i in range(MAX_BALANCER_ITERATIONS):
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current]
         
-        over_populated_districts = [
-            (pop, idx) for idx, pop in enumerate(pop_per_district) if pop > max_pop
-        ]
-        under_populated_districts = [
-            (pop, idx) for idx, pop in enumerate(pop_per_district) if pop < min_pop
-        ]
+        over_populated_districts = sorted(
+            [(pop, idx) for idx, pop in enumerate(pop_per_district) if pop > max_pop],
+            reverse=True
+        )
+        under_populated_districts = sorted(
+            [(pop, idx) for idx, pop in enumerate(pop_per_district) if pop < min_pop]
+        )
 
         if not over_populated_districts or not under_populated_districts:
             logging.info(f"Balancer Iteration {i+1}: No more over/under-populated districts to fix.")
             break
 
-        over_populated_districts.sort(reverse=True)
-        under_populated_districts.sort()
+        source_pop, source_idx = over_populated_districts[0]
+        target_pop, target_idx = under_populated_districts[0]
 
-        source_idx = over_populated_districts[0][1]
-        target_idx = under_populated_districts[0][1]
-
-        pop_needed = min_pop - pop_per_district[target_idx]
-        pop_surplus = pop_per_district[source_idx] - max_pop
+        pop_surplus = source_pop - max_pop
+        pop_needed = min_pop - target_pop
         
+        # Target a small chunk to avoid overshooting
         chunk_target_pop = min(pop_needed, pop_surplus, ideal_pop * 0.02)
 
-        border_blocks = {
+        border_blocks = sorted(list({
             b for b in current[source_idx] 
             if any(n in current[target_idx] for n in G.neighbors(b))
-        }
-        
+        }))
+
         if not border_blocks:
-            logging.warning(f"Balancer could not find border between D{source_idx+1} and D{target_idx+1}. Stopping.")
+            logging.error(f"Balancer cannot find a border between the most over-populated district (D{source_idx+1}) and the most under-populated (D{target_idx+1}). Halting.")
             break
-
-        # Start BFS from a deterministic, random sample of border blocks
-        start_nodes = sorted(list(border_blocks))
-        random.Random(i).shuffle(start_nodes)
         
-        chunk = set()
-        chunk_pop = 0
-        queue = start_nodes[:5] # Start search from a few points on the border
-        visited = set(queue)
-
-        while queue:
-            block = queue.pop(0)
-            block_pop = G.nodes[block]["pop"]
-            
-            if chunk_pop + block_pop > chunk_target_pop:
-                continue
-
-            chunk.add(block)
-            chunk_pop += block_pop
-            
-            for neighbor in G.neighbors(block):
-                if neighbor in current[source_idx] and neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
+        chunk_to_move = None
         
-        if chunk:
-            if is_contiguous(current[source_idx] - chunk, G):
-                logging.info(f"Balancer: Moving {len(chunk)} blocks ({chunk_pop:,} pop) "
-                             f"from D{source_idx+1} to D{target_idx+1}.")
-                current[source_idx] -= chunk
-                current[target_idx] |= chunk
-            else:
-                logging.warning(f"Balancer found a chunk to move but it would break contiguity. Stopping.")
-                break
+        # Iterate through border blocks to find a valid starting point for a chunk
+        for start_node in border_blocks:
+            # Grow a chunk using BFS
+            chunk = set()
+            chunk_pop = 0
+            queue = [start_node]
+            visited = {start_node}
+
+            while queue:
+                block = queue.pop(0)
+                block_pop = G.nodes[block]["pop"]
+                
+                # Stop if chunk is big enough; don't add the current block
+                if chunk_pop + block_pop > chunk_target_pop:
+                    continue
+
+                chunk.add(block)
+                chunk_pop += block_pop
+                
+                for neighbor in G.neighbors(block):
+                    if neighbor in current[source_idx] and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            
+            # After growing a potential chunk, verify it's safe to move
+            if chunk:
+                source_after_move = current[source_idx] - chunk
+                target_after_move = current[target_idx] | chunk
+                
+                # Key validation: ensure both districts remain contiguous
+                if is_contiguous(source_after_move, G) and is_contiguous(target_after_move, G):
+                    chunk_to_move = chunk
+                    break # Found a valid chunk, stop searching
+        
+        if chunk_to_move:
+            moved_pop = sum(G.nodes[b]["pop"] for b in chunk_to_move)
+            logging.info(f"Balancer: Moving {len(chunk_to_move)} blocks ({moved_pop:,} pop) from D{source_idx+1} to D{target_idx+1}.")
+            current[source_idx] -= chunk_to_move
+            current[target_idx] |= chunk_to_move
         else:
-            logging.info("Balancer could not find a suitable chunk to move. Stopping.")
+            logging.warning(f"Balancer searched the entire border between D{source_idx+1} and D{target_idx+1} but could not find a valid chunk to move. Stopping.")
             break
     else:
         logging.warning("Balancer reached iteration limit.")
-
 
     logging.info("Powerful balancing complete.")
     return [list(d) for d in current]
