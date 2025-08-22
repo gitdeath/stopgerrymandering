@@ -28,14 +28,12 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
 
     # --- 1. SEEDING PHASE ---
     logging.info(f"Seeding {D} districts...")
-    # For this algorithm, it's better to sort by unweighted coordinates to get a good spatial spread
-    coords_df = pd.DataFrame.from_dict(
-        {k: (v[1], v[0]) for k, v in gdf[['GEOID20', 'y', 'x']].itertuples(index=False, name=None)},
-        orient='index',
-        columns=['y', 'x']
-    )
+    
+    # --- FIX: Simplify and correct the coordinate sorting ---
+    coords_df = gdf[['GEOID20', 'y', 'x']].set_index('GEOID20')
     coords_df = coords_df[coords_df.index.isin(unassigned_blocks)]
     sorted_coords = coords_df.sort_values(by=["y", "x"], ascending=[False, True])
+    # --- END FIX ---
     
     if len(sorted_coords) < D:
         raise ValueError("Not enough blocks to seed all districts.")
@@ -105,7 +103,7 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         queues[i] = list(frontier)
 
         blocks_assigned_total = len(visited)
-        if blocks_assigned_total % 10000 == 0:
+        if blocks_assigned_total > 0 and blocks_assigned_total % 10000 == 0:
              logging.info(f"Assigned {blocks_assigned_total} / {len(gdf)} blocks...")
              
     # --- 3. STALEMATE RESOLUTION ---
@@ -118,7 +116,7 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                 best_neighbor_dist = min(adj_districts, key=lambda d_idx: pop_per_district[d_idx])
                 districts[best_neighbor_dist].add(block)
                 pop_per_district[best_neighbor_dist] += block_pop_map.get(block, 0)
-            else:
+            else: # Should be rare, but handle isolated blocks
                 districts[np.argmin(pop_per_district)].add(block)
                 pop_per_district[np.argmin(pop_per_district)] += block_pop_map.get(block, 0)
 
