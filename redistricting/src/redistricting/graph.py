@@ -6,16 +6,15 @@ import networkx as nx
 
 def build_adjacency_graph(gdf, progress_interval: int = 5000):
     """
-    Build a block-level adjacency graph.
+    Build a block-level adjacency graph using a simple, robust method.
 
     Nodes: GEOID20 (attrs: pop, x, y, geom)
-    Edges: blocks that 'touch' or 'intersect' (share boundary/vertex).
-    Compatible with older/newer GeoPandas/Shapely/rtree backends.
+    Edges: blocks that 'intersect' (share boundary/vertex).
     """
     logging.info("Building adjacency graph with spatial index...")
 
     G = nx.Graph()
-    # Add nodes with attributes
+    # Add nodes with attributes from the GeoDataFrame
     for _, row in gdf.iterrows():
         G.add_node(
             row["GEOID20"],
@@ -25,115 +24,38 @@ def build_adjacency_graph(gdf, progress_interval: int = 5000):
             geom=row.geometry,
         )
 
-    geoms = list(gdf.geometry.values)
-    geoids = list(gdf["GEOID20"].values)
-
+    # Ensure the spatial index is available
     sindex = gdf.sindex
     if sindex is None:
         raise RuntimeError(
-            "GeoPandas spatial index unavailable. Install 'rtree' (or pygeos/shapely>=2)."
+            "GeoPandas spatial index unavailable. Install 'rtree'."
         )
 
-    # --- Strategy selection -------------------------------------------------
-    # Try the fastest route first (bulk with predicate='intersects'); else try bulk bbox;
-    # else per-geometry query with predicate; else per-geometry bbox + postcheck.
-    has_query_bulk = hasattr(sindex, "query_bulk")
-    supports_predicate_bulk = False
-    if has_query_bulk:
-        try:
-            # Probe predicate support without doing full work
-            _ = sindex.query_bulk(gdf.geometry[:1], predicate="intersects")
-            supports_predicate_bulk = True
-        except Exception:
-            supports_predicate_bulk = False
+    logging.info("Finding adjacent blocks...")
+    # Use a single, reliable method to find and add edges
+    for i, row in gdf.iterrows():
+        current_geoid = row["GEOID20"]
+        current_geom = row.geometry
 
-    # --- Add edges ----------------------------------------------------------
-    if has_query_bulk and supports_predicate_bulk:
-        # Fast path: bulk + predicate in the index
-        pairs = sindex.query_bulk(gdf.geometry, predicate="intersects")
-        n_pairs = pairs.shape[1]
-        logging.info(f"Spatial candidates (intersects via index): {n_pairs:,} pairs")
+        # Use the spatial index to find potential neighbors (bounding box intersection)
+        possible_matches_index = list(sindex.intersection(current_geom.bounds))
 
-        for k in range(n_pairs):
-            i = int(pairs[0, k]); j = int(pairs[1, k])
-            if i >= j: # Use >= to avoid self-loops and duplicates
-                continue
-            G.add_edge(geoids[i], geoids[j])
-            if progress_interval and (k % progress_interval) == 0:
-                logging.info(f"Edge-build progress: {k}/{n_pairs} pairs...")
-
-    elif has_query_bulk:
-        # Bulk bbox hits, then post-check intersects()
-        pairs = sindex.query_bulk(gdf.geometry)
-        n_pairs = pairs.shape[1]
-        logging.info(f"Spatial candidates (bbox): {n_pairs:,} pairs; testing intersects...")
-
-        for k in range(n_pairs):
-            i = int(pairs[0, k]); j = int(pairs[1, k])
-            if i >= j: # Use >= to avoid self-loops and duplicates
-                continue
-            gi = geoms[i]; gj = geoms[j]
-            if not gi or not gj or getattr(gi, "is_empty", False) or getattr(gj, "is_empty", False):
-                continue
-            try:
-                # *** KEY CHANGE: Use intersects() instead of touches() ***
-                if gi.intersects(gj):
-                    G.add_edge(geoids[i], geoids[j])
-            except Exception:
-                continue
-            if progress_interval and (k % progress_interval) == 0:
-                logging.info(f"Intersect-test progress: {k}/{n_pairs} pairs...")
-
-    else:
-        # Oldest fallback: per-geometry query
-        n = len(geoms)
-        # Check if per-geometry predicate is supported
-        supports_predicate = False
-        try:
-            _ = sindex.query(gdf.geometry.iloc[0:1], predicate="intersects")
-            supports_predicate = True
-        except Exception:
-            supports_predicate = False
-
-        edges_added = 0
-        for i, gi in enumerate(geoms):
-            if i % max(1, progress_interval // 10) == 0:
-                logging.info(f"Adjacency: processing geometry {i}/{n}...")
-
-            if not gi or getattr(gi, "is_empty", False):
+        # Filter for actual intersections and add edges
+        for possible_match_index in possible_matches_index:
+            # Don't check a block against itself or create duplicate edges
+            if i >= possible_match_index:
                 continue
 
-            try:
-                if supports_predicate:
-                    candidates = sindex.query(gdf.geometry.iloc[i:i+1], predicate="intersects")
-                else:
-                    candidates = sindex.query(gdf.geometry.iloc[i:i+1])  # bbox
-                # candidates is an index-like; iterate over integer positions
-                for j in getattr(candidates, "tolist", lambda: list(candidates))():
-                    if i >= j: # Use >= to avoid self-loops and duplicates
-                        continue
-                    gj = geoms[j]
-                    if not gj or getattr(gj, "is_empty", False):
-                        continue
-                    if supports_predicate:
-                        # already 'intersects' by predicate
-                        G.add_edge(geoids[i], geoids[j])
-                        edges_added += 1
-                    else:
-                        # bbox-hit: post-check intersects
-                        try:
-                             # *** KEY CHANGE: Use intersects() instead of touches() ***
-                            if gi.intersects(gj):
-                                G.add_edge(geoids[i], geoids[j])
-                                edges_added += 1
-                        except Exception:
-                            continue
-            except Exception:
-                # Defensive: skip odd cases to keep building
-                continue
+            neighbor_row = gdf.iloc[possible_match_index]
+            neighbor_geoid = neighbor_row["GEOID20"]
+            neighbor_geom = neighbor_row.geometry
 
-        logging.info(f"Edges added (per-geometry mode): {edges_added:,}")
+            if current_geom.intersects(neighbor_geom):
+                G.add_edge(current_geoid, neighbor_geoid)
 
+        if progress_interval and (i % progress_interval) == 0 and i > 0:
+            logging.info(f"Adjacency progress: processed {i}/{len(gdf)} blocks...")
+    
     logging.info(
         f"Graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges."
     )
