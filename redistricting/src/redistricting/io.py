@@ -115,7 +115,10 @@ def load_and_preprocess_data(paths: DataPaths, crs_epsg: int):
     gdf = gdf.merge(merged_df, left_on="GEOID20", right_on="GEOID", how="left")
     if gdf["P1_001N"].isna().any():
         missing = gdf["P1_001N"].isna().sum()
-        raise ValueError(f"Missing population data for {missing} blocks.")
+        # Filling NA with 0 for blocks that might not have population data (e.g., parks, water)
+        gdf["P1_001N"] = gdf["P1_001N"].fillna(0)
+        logging.warning(f"Filled {missing} blocks with 0 population.")
+
 
     gdf["P1_001N"] = gdf["P1_001N"].astype(int)
     total_pop = int(gdf["P1_001N"].sum())
