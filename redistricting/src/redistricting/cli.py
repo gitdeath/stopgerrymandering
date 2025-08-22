@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import Settings
 from .io import unzip_and_find_files, load_and_preprocess_data
 from .assign import initial_assignment
-from .optimize import fix_contiguity, rapid_balance, perfect_map
+from .optimize import fix_contiguity, powerful_balancer, perfect_map
 from .metrics import polsby_popper, is_contiguous, compute_inertia
 from .viz import plot_districts
 
@@ -117,15 +117,14 @@ def main():
         plot_districts(gdf, contiguous_map, st.name, scode, output_filename=f"debug_2_contiguous_{scode}.png")
         print_debug_stats("Contiguity Repair", contiguous_map, gdf, G)
     
-    logging.info("Starting Stage 2: Rapid Balancing...")
-    balanced_map, _ = rapid_balance(
+    logging.info("Starting Stage 2: Powerful Balancing...")
+    balanced_map = powerful_balancer(
         contiguous_map, gdf, G, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
-        compactness_threshold=settings.defaults.compactness_threshold
     )
     if args.debug:
         plot_districts(gdf, balanced_map, st.name, scode, output_filename=f"debug_3_balanced_{scode}.png")
-        print_debug_stats("Rapid Balancing", balanced_map, gdf, G)
+        print_debug_stats("Powerful Balancing", balanced_map, gdf, G)
 
     logging.info("Starting Stage 3: Final Perfecting...")
     final_map, final_score = perfect_map(
