@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import random
 import pandas as pd
 import numpy as np
 
 
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Builds districts simultaneously using an inertia-guided, competitive region-growing algorithm.
+    Builds districts simultaneously using an inertia-guided, competitive region-growing algorithm
+    with an efficiently managed and sampled frontier.
     """
     logging.info("Step 3 of 5: Generating initial district map using Competitive Growth...")
     
@@ -16,8 +18,15 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     total_blocks = len(unassigned_blocks)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
     
-    block_pop_map = {row.GEOID20: int(row.P1_001N) for row in gdf.itertuples()}
-    block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
+    # --- Pre-calculation with corrected column access ---
+    # Get column indices once to prevent errors and improve speed
+    geoid_idx = gdf.columns.get_loc("GEOID20")
+    pop_idx = gdf.columns.get_loc("P1_001N")
+    x_idx = gdf.columns.get_loc("x")
+    y_idx = gdf.columns.get_loc("y")
+
+    block_pop_map = {row[geoid_idx]: int(row[pop_idx]) for row in gdf.itertuples(index=False, name=None)}
+    block_coords_map = {row[geoid_idx]: (row[x_idx], row[y_idx]) for row in gdf.itertuples(index=False, name=None)}
     
     # --- 1. SEEDING PHASE ---
     logging.info(f"Seeding {D} districts...")
@@ -30,44 +39,53 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     seed_indices = np.linspace(0, len(sorted_populated) - 1, D, dtype=int)
     seeds = [sorted_populated.iloc[i]["GEOID20"] for i in seed_indices]
 
+    pop_per_district = np.zeros(D)
+    pop_x_per_district = np.zeros(D)
+    pop_y_per_district = np.zeros(D)
+    frontiers = [set() for _ in range(D)]
+
     for i, seed_block in enumerate(seeds):
         districts[i].add(seed_block)
         unassigned_blocks.remove(seed_block)
-    
-    pop_per_district = np.array([sum(block_pop_map.get(b,0) for b in d) for d in districts])
+        
+        pop_to_add = block_pop_map[seed_block]
+        coords_to_add = block_coords_map[seed_block]
+
+        pop_per_district[i] += pop_to_add
+        pop_x_per_district[i] += coords_to_add[0] * pop_to_add
+        pop_y_per_district[i] += coords_to_add[1] * pop_to_add
+        
+        for neighbor in G.neighbors(seed_block):
+            if neighbor in unassigned_blocks:
+                frontiers[i].add(neighbor)
     
     logging.info("Seeding complete. Starting competitive growth phase...")
-    # --- 2. COMPETITIVE GROWTH PHASE ---
     districts_at_max_pop = [False] * D
     
+    MAX_FRONTIER_SAMPLE = 500
+    round_num = 0
     while unassigned_blocks:
+        round_num += 1
         blocks_assigned_in_round = 0
         
         for i in range(D):
-            if districts_at_max_pop[i]:
-                continue
-
-            frontier = {
-                neighbor
-                for block in districts[i]
-                for neighbor in G.neighbors(block)
-                if neighbor in unassigned_blocks
-            }
-
-            if not frontier:
+            if districts_at_max_pop[i] or not frontiers[i]:
                 continue
 
             current_pop = pop_per_district[i]
             if current_pop == 0: continue
             
-            pop_x = sum(block_coords_map[b][0] * block_pop_map[b] for b in districts[i])
-            pop_y = sum(block_coords_map[b][1] * block_pop_map[b] for b in districts[i])
-            centroid_x, centroid_y = pop_x / current_pop, pop_y / current_pop
+            centroid_x = pop_x_per_district[i] / current_pop
+            centroid_y = pop_y_per_district[i] / current_pop
             
             best_block_to_add = None
             lowest_inertia_gain = float('inf')
+            
+            frontier_to_check = frontiers[i]
+            if len(frontier_to_check) > MAX_FRONTIER_SAMPLE:
+                frontier_to_check = random.Random(round_num + i).sample(sorted(list(frontiers[i])), MAX_FRONTIER_SAMPLE)
 
-            for frontier_block in frontier:
+            for frontier_block in frontier_to_check:
                 pop = block_pop_map[frontier_block]
                 coords = block_coords_map[frontier_block]
                 dist_sq = (coords[0] - centroid_x)**2 + (coords[1] - centroid_y)**2
@@ -79,10 +97,22 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
             
             if best_block_to_add:
                 pop_to_add = block_pop_map[best_block_to_add]
+                coords_to_add = block_coords_map[best_block_to_add]
                 
                 districts[i].add(best_block_to_add)
-                unassigned_blocks.remove(best_block_to_add)
                 pop_per_district[i] += pop_to_add
+                pop_x_per_district[i] += coords_to_add[0] * pop_to_add
+                pop_y_per_district[i] += coords_to_add[1] * pop_to_add
+                
+                unassigned_blocks.remove(best_block_to_add)
+                
+                for f in frontiers:
+                    f.discard(best_block_to_add)
+
+                for neighbor in G.neighbors(best_block_to_add):
+                    if neighbor in unassigned_blocks:
+                        frontiers[i].add(neighbor)
+
                 blocks_assigned_in_round += 1
 
                 if pop_per_district[i] >= max_pop:
@@ -94,28 +124,18 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
              logging.info(f"Assigned {blocks_assigned_total} / {total_blocks} blocks...")
 
         if blocks_assigned_in_round == 0 and unassigned_blocks:
-            logging.warning(f"Stalemate detected with {len(unassigned_blocks)} trapped blocks. "
-                            f"Assigning them to least-populated full neighbors to preserve contiguity...")
-            
+            logging.warning(f"Stalemate detected with {len(unassigned_blocks)} trapped blocks. Assigning them.")
             membership = {b: i for i, d in enumerate(districts) for b in d}
-            
-            for block in list(unassigned_blocks):
-                adj_full_districts = {
-                    membership[n] for n in G.neighbors(block) if n in membership
-                }
-                if adj_full_districts:
-                    best_neighbor_dist = min(adj_full_districts, key=lambda d_idx: pop_per_district[d_idx])
-                    
+            for block in sorted(list(unassigned_blocks)):
+                adj_districts = {membership[n] for n in G.neighbors(block) if n in membership}
+                if adj_districts:
+                    # --- DETERMINISTIC TIE-BREAKING FIX ---
+                    # Sort by population, then by district index to break ties
+                    best_neighbor_dist = min(adj_districts, key=lambda d_idx: (pop_per_district[d_idx], d_idx))
                     districts[best_neighbor_dist].add(block)
-                    pop_per_district[best_neighbor_dist] += block_pop_map[block]
-                    unassigned_blocks.remove(block)
                 else:
-                    # This is a true, disconnected island with no assigned neighbors.
-                    # This should be very rare. Assign to least populated overall.
-                    least_pop_dist = np.argmin(pop_per_district)
-                    districts[least_pop_dist].add(block)
-                    pop_per_district[least_pop_dist] += block_pop_map[block]
-                    unassigned_blocks.remove(block)
+                    districts[np.argmin(pop_per_district)].add(block)
+            unassigned_blocks.clear()
             break
              
     logging.info("Initial assignment complete.")
