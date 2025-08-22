@@ -9,42 +9,70 @@ from .metrics import objective, is_contiguous
 
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
-    """Stage 1: Finds and repairs non-contiguous districts."""
-    fixed_districts = [set(d) for d in districts]
+    """
+    Stage 1: Finds and repairs non-contiguous districts by moving entire islands.
+    """
+    current_districts = [set(d) for d in districts]
+    
     while True:
-        membership = {b: i for i, d in enumerate(fixed_districts) for b in d}
-        fixes_made = 0
-        for i, d in enumerate(fixed_districts):
-            if not d: continue
-            components = list(nx.connected_components(G.subgraph(d)))
-            if len(components) > 1:
-                components.sort(key=len, reverse=True)
-                islands = components[1:]
-                for island in islands:
-                    for block in island:
-                        neighbors_in_main_graph = G.neighbors(block)
-                        neighbor_districts = [
-                            membership[n] for n in neighbors_in_main_graph 
-                            if n in membership and membership[n] != i
-                        ]
-                        if neighbor_districts:
-                            most_common_neighbor_dist = Counter(neighbor_districts).most_common(1)[0][0]
-                            logging.warning(
-                                f"CONTIGUITY FIX: Moving block {block} from District {i+1} "
-                                f"to its neighbor, District {most_common_neighbor_dist+1}."
-                            )
-                            fixed_districts[i].remove(block)
-                            fixed_districts[most_common_neighbor_dist].add(block)
-                            fixes_made += 1
-        if fixes_made == 0:
+        fixes_made_in_pass = 0
+        
+        # Rebuild membership map at the start of each full pass
+        membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
+        
+        for i, district in enumerate(current_districts):
+            if not district:
+                continue
+
+            components = list(nx.connected_components(G.subgraph(district)))
+            if len(components) <= 1:
+                continue
+
+            # Identify the main component and the islands
+            components.sort(key=len, reverse=True)
+            main_component = components[0]
+            islands = components[1:]
+            
+            logging.warning(f"District {i+1} is not contiguous. Found {len(islands)} island(s).")
+
+            # Update the district to only contain the main component for now
+            current_districts[i] = set(main_component)
+            
+            for island in islands:
+                # Find all external neighbors of the entire island
+                external_neighbors = nx.node_boundary(G, island)
+                neighbor_districts = [membership.get(n) for n in external_neighbors if membership.get(n) is not None and membership.get(n) != i]
+
+                if not neighbor_districts:
+                    logging.error(f"FATAL: Island of {len(island)} blocks from D{i+1} has NO neighbors. Cannot fix.")
+                    # In a real scenario, you might assign to the least populated district or handle this case
+                    # For now, we'll add it back to its original district to avoid losing blocks
+                    current_districts[i].update(island)
+                    continue
+
+                # Find the most common neighboring district to donate the island to
+                most_common_neighbor_dist = Counter(neighbor_districts).most_common(1)[0][0]
+                
+                logging.warning(
+                    f"CONTIGUITY FIX: Moving an island of {len(island)} blocks from District {i+1} "
+                    f"to its most common neighbor, District {most_common_neighbor_dist+1}."
+                )
+                
+                # Move the entire island at once
+                current_districts[most_common_neighbor_dist].update(island)
+                fixes_made_in_pass += len(island)
+
+        # If a full pass over all districts results in no fixes, we are done.
+        if fixes_made_in_pass == 0:
             break
             
-    for i, d in enumerate(fixed_districts):
+    # Final verification
+    for i, d in enumerate(current_districts):
         if d and not is_contiguous(d, G):
-            raise RuntimeError(f"Contiguity fix failed for District {i+1}")
+            raise RuntimeError(f"Contiguity fix failed for District {i+1} after all passes.")
 
     logging.info("Contiguity repair complete.")
-    return [list(d) for d in fixed_districts]
+    return [list(d) for d in current_districts]
 
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
@@ -80,9 +108,9 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
 
         border_blocks = {
             b for b in current[source_idx] 
-            if any(G.has_edge(b, n) for n in current[target_idx])
+            if any(n in current[target_idx] for n in G.neighbors(b))
         }
-
+        
         if not border_blocks:
             logging.warning(f"Balancer could not find border between D{source_idx+1} and D{target_idx+1}. Stopping.")
             break
