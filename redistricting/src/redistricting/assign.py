@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import pandas as pd
 import numpy as np
 
 
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
-    Builds districts using a prioritized, layer-by-layer BFS growth. At each step,
-    the district with the smallest population adds its entire next 'ring' of blocks,
-    ensuring balanced, organic growth.
+    Builds districts using a prioritized, layer-by-layer BFS growth, seeded from
+    8 equally spaced points on the state's exterior border.
     """
-    logging.info("Step 3 of 5: Generating initial district map using Prioritized BFS Growth...")
+    logging.info("Step 3 of 5: Generating initial district map using Prioritized BFS Growth from Edges...")
     
     districts = [set() for _ in range(D)]
     unassigned_blocks = set(gdf["GEOID20"])
@@ -26,20 +26,34 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
 
-    # --- 1. SEEDING PHASE ---
-    logging.info(f"Seeding {D} districts...")
+    # --- 1. EDGE SEEDING PHASE ---
+    logging.info(f"Seeding {D} districts from the state border...")
+
+    # Find the exterior boundary of the entire state
+    state_boundary = gdf.unary_union.exterior
     
-    # --- FIX: Simplify and correct the coordinate sorting ---
-    coords_df = gdf[['GEOID20', 'y', 'x']].set_index('GEOID20')
-    coords_df = coords_df[coords_df.index.isin(unassigned_blocks)]
-    sorted_coords = coords_df.sort_values(by=["y", "x"], ascending=[False, True])
-    # --- END FIX ---
+    # Find all blocks that lie on the exterior boundary
+    border_blocks_gdf = gdf[gdf.geometry.intersects(state_boundary)]
     
-    if len(sorted_coords) < D:
-        raise ValueError("Not enough blocks to seed all districts.")
+    if len(border_blocks_gdf) < D:
+        raise RuntimeError("Not enough border blocks to seed all districts.")
         
-    seed_indices = np.linspace(0, len(sorted_coords) - 1, D, dtype=int)
-    seeds = [sorted_coords.index[i] for i in seed_indices]
+    # Find the geometric center of the state to sort border blocks angularly
+    state_centroid = gdf.unary_union.centroid
+    cx, cy = state_centroid.x, state_centroid.y
+    
+    # Calculate the angle of each border block relative to the state's center
+    border_blocks_gdf['angle'] = border_blocks_gdf.apply(
+        lambda row: math.atan2(row['y'] - cy, row['x'] - cx),
+        axis=1
+    )
+    
+    # Sort the border blocks by angle to get a clockwise ordering
+    sorted_border_blocks = border_blocks_gdf.sort_values('angle')
+
+    # Select D equally spaced seeds from the sorted border blocks
+    seed_indices = np.linspace(0, len(sorted_border_blocks) - 1, D, dtype=int)
+    seeds = [sorted_border_blocks.iloc[i]["GEOID20"] for i in seed_indices]
 
     pop_per_district = np.zeros(D)
     
@@ -48,6 +62,10 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     visited = set()
 
     for i, seed_block in enumerate(seeds):
+        if seed_block not in unassigned_blocks:
+            # Handle cases where a chosen seed was already taken by a nearby seed
+            continue
+            
         districts[i].add(seed_block)
         unassigned_blocks.remove(seed_block)
         visited.add(seed_block)
@@ -60,21 +78,18 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     districts_at_max_pop = [False] * D
     
     while unassigned_blocks:
-        # Find the district with the lowest current population that is not yet full
         active_pops = [p if not districts_at_max_pop[i] else float('inf') for i, p in enumerate(pop_per_district)]
         
         if all(p == float('inf') for p in active_pops):
             logging.info("All districts are full. Moving to stalemate resolution.")
             break
             
-        i = np.argmin(active_pops) # This is the index of the smallest district
+        i = np.argmin(active_pops)
 
         if not queues[i]:
-            # This district has no more blocks to expand from, so it is done.
             districts_at_max_pop[i] = True
             continue
 
-        # Get the next layer (frontier) of blocks for the chosen district
         frontier = set()
         for block in queues[i]:
             for neighbor in G.neighbors(block):
@@ -82,24 +97,24 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                     frontier.add(neighbor)
         
         if not frontier:
-            # This district is walled off, so it is done.
             districts_at_max_pop[i] = True
             continue
 
+        # Mark frontier as visited now to prevent other districts from claiming it in the same pass
+        visited.update(frontier)
+        
         frontier_pop = sum(block_pop_map[b] for b in frontier)
 
-        # Check if adding the entire layer would overpopulate the district
         if pop_per_district[i] + frontier_pop > max_pop:
             districts_at_max_pop[i] = True
-            continue # Skip this district's turn; it can't take its next full layer
+            # Since we can't add this layer, "un-visit" the frontier so other districts can claim it
+            visited.difference_update(frontier)
+            continue
 
-        # If safe, assign the entire layer
         districts[i].update(frontier)
         unassigned_blocks.difference_update(frontier)
-        visited.update(frontier)
         pop_per_district[i] += frontier_pop
         
-        # The new layer becomes the queue for the next turn
         queues[i] = list(frontier)
 
         blocks_assigned_total = len(visited)
@@ -109,14 +124,14 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     # --- 3. STALEMATE RESOLUTION ---
     if unassigned_blocks:
         logging.warning(f"Assigning {len(unassigned_blocks)} remaining trapped blocks...")
-        membership = {b: i for i, d in enumerate(districts) for b in d}
+        membership = {b: i for i, d in enumerate(districts) for b in d if d}
         for block in sorted(list(unassigned_blocks)):
             adj_districts = {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None}
             if adj_districts:
                 best_neighbor_dist = min(adj_districts, key=lambda d_idx: pop_per_district[d_idx])
                 districts[best_neighbor_dist].add(block)
                 pop_per_district[best_neighbor_dist] += block_pop_map.get(block, 0)
-            else: # Should be rare, but handle isolated blocks
+            else:
                 districts[np.argmin(pop_per_district)].add(block)
                 pop_per_district[np.argmin(pop_per_district)] += block_pop_map.get(block, 0)
 
