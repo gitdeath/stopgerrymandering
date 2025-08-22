@@ -5,25 +5,6 @@ import pandas as pd
 import numpy as np
 
 
-def get_sweep_order(gdf):
-    """
-    Deterministic sweep order based on a hash of all block IDs.
-    Produces one of four sweeps over (x,y) to avoid bias.
-    """
-    block_ids = sorted(gdf["GEOID20"])
-    hash_val = hashlib.sha256("".join(block_ids).encode()).hexdigest()
-    sweep_idx = int(hash_val, 16) % 4
-
-    if sweep_idx == 0:  # NE: descending y, ascending x
-        return gdf.sort_values(by=["y", "x"], ascending=[False, True])["GEOID20"].tolist()
-    elif sweep_idx == 1:  # SW: ascending y, ascending x
-        return gdf.sort_values(by=["y", "x"], ascending=[True, True])["GEOID20"].tolist()
-    elif sweep_idx == 2:  # SE: ascending y, descending x
-        return gdf.sort_values(by=["y", "x"], ascending=[True, False])["GEOID20"].tolist()
-    else:  # NW: descending y, descending x
-        return gdf.sort_values(by=["y", "x"], ascending=[False, False])["GEOID20"].tolist()
-
-
 def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: float):
     """
     Builds districts simultaneously using an inertia-guided, competitive region-growing algorithm.
@@ -32,10 +13,9 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     
     districts = [set() for _ in range(D)]
     unassigned_blocks = set(gdf["GEOID20"])
-    total_blocks = len(unassigned_blocks) # Get total block count once at the start
+    total_blocks = len(unassigned_blocks)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
     
-    # Pre-calculate data for performance
     block_pop_map = {row.GEOID20: int(row.P1_001N) for row in gdf.itertuples()}
     block_coords_map = {row.GEOID20: (row.x, row.y) for row in gdf.itertuples()}
     
@@ -61,11 +41,8 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
     districts_at_max_pop = [False] * D
     
     while unassigned_blocks:
-        # Check every N blocks for progress logging
-        blocks_assigned = total_blocks - len(unassigned_blocks)
-        if blocks_assigned > 0 and blocks_assigned % 5000 < D:
-             logging.info(f"Assigned {blocks_assigned} / {total_blocks} blocks...")
-
+        blocks_assigned_in_round = 0
+        
         for i in range(D):
             if districts_at_max_pop[i]:
                 continue
@@ -106,10 +83,40 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                 districts[i].add(best_block_to_add)
                 unassigned_blocks.remove(best_block_to_add)
                 pop_per_district[i] += pop_to_add
+                blocks_assigned_in_round += 1
 
                 if pop_per_district[i] >= max_pop:
                     districts_at_max_pop[i] = True
                     logging.info(f"District {i+1} has reached its population cap.")
+        
+        blocks_assigned_total = total_blocks - len(unassigned_blocks)
+        if blocks_assigned_total > 0 and blocks_assigned_total % 5000 == 0:
+             logging.info(f"Assigned {blocks_assigned_total} / {total_blocks} blocks...")
 
+        if blocks_assigned_in_round == 0 and unassigned_blocks:
+            logging.warning(f"Stalemate detected with {len(unassigned_blocks)} trapped blocks. "
+                            f"Assigning them to least-populated full neighbors to preserve contiguity...")
+            
+            membership = {b: i for i, d in enumerate(districts) for b in d}
+            
+            for block in list(unassigned_blocks):
+                adj_full_districts = {
+                    membership[n] for n in G.neighbors(block) if n in membership
+                }
+                if adj_full_districts:
+                    best_neighbor_dist = min(adj_full_districts, key=lambda d_idx: pop_per_district[d_idx])
+                    
+                    districts[best_neighbor_dist].add(block)
+                    pop_per_district[best_neighbor_dist] += block_pop_map[block]
+                    unassigned_blocks.remove(block)
+                else:
+                    # This is a true, disconnected island with no assigned neighbors.
+                    # This should be very rare. Assign to least populated overall.
+                    least_pop_dist = np.argmin(pop_per_district)
+                    districts[least_pop_dist].add(block)
+                    pop_per_district[least_pop_dist] += block_pop_map[block]
+                    unassigned_blocks.remove(block)
+            break
+             
     logging.info("Initial assignment complete.")
     return [list(d) for d in districts]
