@@ -10,14 +10,14 @@ from .metrics import objective, is_contiguous
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
     """
-    Stage 1: Finds and repairs non-contiguous districts by moving entire islands.
+    Stage 1: Finds and repairs non-contiguous districts by moving entire islands
+    and running a final smoothing pass to clean up small irregularities.
     """
     current_districts = [set(d) for d in districts]
     
+    # --- Main Island-Fixing Loop ---
     while True:
         fixes_made_in_pass = 0
-        
-        # Rebuild membership map at the start of each full pass
         membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
         
         for i, district in enumerate(current_districts):
@@ -28,51 +28,63 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
             if len(components) <= 1:
                 continue
 
-            # Identify the main component and the islands
             components.sort(key=len, reverse=True)
             main_component = components[0]
             islands = components[1:]
             
-            logging.warning(f"District {i+1} is not contiguous. Found {len(islands)} island(s).")
-
-            # Update the district to only contain the main component for now
+            logging.warning(f"District {i+1} is not contiguous. Found {len(islands)} island(s). Fixing.")
             current_districts[i] = set(main_component)
             
             for island in islands:
-                # Find all external neighbors of the entire island
                 external_neighbors = nx.node_boundary(G, island)
                 neighbor_districts = [membership.get(n) for n in external_neighbors if membership.get(n) is not None and membership.get(n) != i]
 
                 if not neighbor_districts:
-                    logging.error(f"FATAL: Island of {len(island)} blocks from D{i+1} has NO neighbors. Cannot fix.")
-                    # In a real scenario, you might assign to the least populated district or handle this case
-                    # For now, we'll add it back to its original district to avoid losing blocks
+                    logging.error(f"FATAL: Island from D{i+1} has NO neighbors. Cannot fix.")
                     current_districts[i].update(island)
                     continue
 
-                # Find the most common neighboring district to donate the island to
                 most_common_neighbor_dist = Counter(neighbor_districts).most_common(1)[0][0]
-                
-                logging.warning(
-                    f"CONTIGUITY FIX: Moving an island of {len(island)} blocks from District {i+1} "
-                    f"to its most common neighbor, District {most_common_neighbor_dist+1}."
-                )
-                
-                # Move the entire island at once
                 current_districts[most_common_neighbor_dist].update(island)
                 fixes_made_in_pass += len(island)
 
-        # If a full pass over all districts results in no fixes, we are done.
         if fixes_made_in_pass == 0:
+            logging.info("Main contiguity pass complete. No more large islands found.")
             break
             
+    # --- Final Smoothing/Cleanup Pass (THE NEW FIX) ---
+    logging.info("Starting final contiguity cleanup pass...")
+    all_blocks = list(G.nodes())
+    smoothed_districts = [set(d) for d in current_districts]
+    membership = {block: i for i, dist in enumerate(smoothed_districts) for block in dist}
+    
+    for block in all_blocks:
+        current_district_idx = membership.get(block)
+        if current_district_idx is None: continue
+
+        neighbor_districts = [membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None]
+        if not neighbor_districts: continue
+
+        most_common_neighbor = Counter(neighbor_districts).most_common(1)[0][0]
+
+        if current_district_idx != most_common_neighbor:
+            # Check to ensure the move doesn't break the source district's contiguity
+            source_district = smoothed_districts[current_district_idx]
+            if len(source_district) > 1 and not is_contiguous(source_district - {block}, G):
+                continue # Skip move if it would create a new problem
+
+            logging.warning(f"SMOOTHING: Reassigning rogue block {block} from D{current_district_idx+1} to majority neighbor D{most_common_neighbor+1}.")
+            smoothed_districts[current_district_idx].remove(block)
+            smoothed_districts[most_common_neighbor].add(block)
+            membership[block] = most_common_neighbor
+    
     # Final verification
-    for i, d in enumerate(current_districts):
+    for i, d in enumerate(smoothed_districts):
         if d and not is_contiguous(d, G):
-            raise RuntimeError(f"Contiguity fix failed for District {i+1} after all passes.")
+            raise RuntimeError(f"Contiguity fix failed for District {i+1} even after smoothing.")
 
     logging.info("Contiguity repair complete.")
-    return [list(d) for d in current_districts]
+    return [list(d) for d in smoothed_districts]
 
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
