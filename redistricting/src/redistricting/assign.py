@@ -81,9 +81,17 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
             best_block_to_add = None
             lowest_inertia_gain = float('inf')
             
+            # --- INTELLIGENT SAMPLING (THE FIX) ---
             frontier_to_check = frontiers[i]
             if len(frontier_to_check) > MAX_FRONTIER_SAMPLE:
-                frontier_to_check = random.Random(round_num + i).sample(sorted(list(frontiers[i])), MAX_FRONTIER_SAMPLE)
+                # Sort all frontier blocks by squared Euclidean distance to the centroid
+                sorted_frontier = sorted(
+                    frontier_to_check,
+                    key=lambda b: (block_coords_map[b][0] - centroid_x)**2 + (block_coords_map[b][1] - centroid_y)**2
+                )
+                # Only check the closest N blocks
+                frontier_to_check = sorted_frontier[:MAX_FRONTIER_SAMPLE]
+            # --- END FIX ---
 
             for frontier_block in frontier_to_check:
                 pop = block_pop_map[frontier_block]
