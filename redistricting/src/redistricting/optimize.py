@@ -5,7 +5,7 @@ import random
 from collections import Counter
 import networkx as nx
 
-from .metrics import objective, is_contiguous, compute_inertia
+from .metrics import objective, is_contiguous
 
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
@@ -73,7 +73,6 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
         for source_idx in over_populated_districts:
             for target_idx in under_populated_districts:
                 border_blocks = sorted(list({b for b in current[source_idx] if any(n in current[target_idx] for n in G.neighbors(b))}))
-
                 if not border_blocks: continue
 
                 pop_surplus = pop_per_district[source_idx] - max_pop
@@ -86,7 +85,6 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
                     chunk_pop = 0
                     queue = [start_node]
                     visited = {start_node}
-
                     while queue:
                         block = queue.pop(0)
                         block_pop = G.nodes[block]["pop"]
@@ -126,48 +124,81 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     return [list(d) for d in current]
 
 
+def _calculate_fast_score(districts, G, ideal_pop):
+    """A simplified, fast score that only considers population deviation."""
+    score = 0
+    for d in districts:
+        if not d: continue
+        pop = sum(G.nodes[b]["pop"] for b in d)
+        score += (pop - ideal_pop) ** 2
+    return score
+
+
 def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    Stage 3: The final, meticulous optimization using the hybrid score.
+    Final optimizer with a two-pass 'fast first' approach to prevent hangs.
     """
     logging.info("Starting Stage 3: Final Perfecting...")
     current = [set(d) for d in districts]
-    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
-    logging.info(f"Final perfecting starting score: {current_score:.2f}")
-
-    MAX_PERFECTING_ITERATIONS = 50
-    for iteration in range(1, MAX_PERFECTING_ITERATIONS + 1):
+    
+    # --- PASS 1: FAST POPULATION BALANCING ---
+    logging.info("Perfecting Pass 1: Running fast, population-only optimization...")
+    MAX_FAST_PASS_ITERATIONS = 100 
+    for iteration in range(1, MAX_FAST_PASS_ITERATIONS + 1):
+        current_score = _calculate_fast_score(current, G, ideal_pop)
         best_move, best_delta = None, 0.0
         membership = {b: i for i, d in enumerate(current) for b in d}
+        all_border_blocks = list({b for d in current for b in d if any(membership.get(n) != membership[b] for n in G.neighbors(b))})
         
-        all_border_blocks = list({
-            b for i, d in enumerate(current) for b in d 
-            if any(membership.get(n) is not None and membership.get(n) != i for n in G.neighbors(b))
-        })
-
-        # --- THE PERFORMANCE FIX ---
-        # Instead of checking all border blocks, check a more reasonably sized random sample.
-        SAMPLE_SIZE = 500
-        if len(all_border_blocks) > SAMPLE_SIZE:
-            blocks_to_check = random.sample(all_border_blocks, SAMPLE_SIZE)
-        else:
-            blocks_to_check = all_border_blocks
-        
-        logging.debug(f"Perfecting Iteration {iteration}: Checking {len(blocks_to_check)} border blocks for improvements...")
+        SAMPLE_SIZE = 750
+        blocks_to_check = random.sample(all_border_blocks, min(len(all_border_blocks), SAMPLE_SIZE))
 
         for block in blocks_to_check:
             from_idx = membership.get(block)
             if from_idx is None: continue
-            
-            neighbor_districts = {
-                membership[n] for n in G.neighbors(block) if membership.get(n) is not None and membership[n] != from_idx
-            }
-
-            for to_idx in neighbor_districts:
+            for to_idx in {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None and membership.get(n) != from_idx}:
                 trial = [set(d) for d in current]
                 trial[from_idx].remove(block)
                 trial[to_idx].add(block)
+                if not is_contiguous(trial[from_idx], G): continue
                 
+                new_score = _calculate_fast_score(trial, G, ideal_pop)
+                delta = current_score - new_score
+                if delta > best_delta:
+                    best_delta, best_move = delta, (block, from_idx, to_idx)
+
+        if best_move:
+            b, fidx, tidx = best_move
+            current[fidx].remove(b)
+            current[tidx].add(b)
+            logging.debug(f"Fast Pass Iteration {iteration}: Applied move. New pop score: {current_score - best_delta:.2f}")
+        else:
+            logging.info("Fast Pass: No further population improvements found.")
+            break
+
+    # --- PASS 2: SLOW SHAPE POLISHING ---
+    logging.info("Perfecting Pass 2: Running full hybrid-score optimization...")
+    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
+    logging.info(f"Hybrid score after fast pass: {current_score:.2f}")
+
+    MAX_SLOW_PASS_ITERATIONS = 30
+    for iteration in range(1, MAX_SLOW_PASS_ITERATIONS + 1):
+        best_move, best_delta = None, 0.0
+        membership = {b: i for i, d in enumerate(current) for b in d}
+        all_border_blocks = list({b for d in current for b in d if any(membership.get(n) != membership[b] for n in G.neighbors(b))})
+
+        SAMPLE_SIZE = 500
+        blocks_to_check = random.sample(all_border_blocks, min(len(all_border_blocks), SAMPLE_SIZE))
+        
+        logging.debug(f"Slow Pass Iteration {iteration}: Checking {len(blocks_to_check)} border blocks for shape improvements...")
+
+        for block in blocks_to_check:
+            from_idx = membership.get(block)
+            if from_idx is None: continue
+            for to_idx in {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None and membership.get(n) != from_idx}:
+                trial = [set(d) for d in current]
+                trial[from_idx].remove(block)
+                trial[to_idx].add(block)
                 if not is_contiguous(trial[from_idx], G): continue
                 
                 new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio)
@@ -180,11 +211,10 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
             current[fidx].remove(b)
             current[tidx].add(b)
             current_score -= best_delta
-            logging.info(f"Perfecting Iteration {iteration}: Applied best move; new score {current_score:.2f}")
+            logging.info(f"Slow Pass Iteration {iteration}: Applied best move. New hybrid score: {current_score:.2f}")
         else:
-            logging.info(f"Perfecting Iteration {iteration}: No further improvements found.")
+            logging.info(f"Slow Pass: No further shape improvements found.")
             break
-    else:
-        logging.warning("Perfecting stage reached iteration limit.")
-
+            
+    logging.info("Final perfecting complete.")
     return [list(d) for d in current], current_score
