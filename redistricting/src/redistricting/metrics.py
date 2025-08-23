@@ -24,7 +24,7 @@ def compute_inertia(district_blocks, gdf) -> float:
 
 def compute_bounding_box_score(district_blocks, gdf) -> float:
     """
-    NEW: Measures how well a district fills its rectangular bounding box.
+    Measures how well a district fills its rectangular bounding box.
     Score of 1.0 is a perfect rectangle. Lower is worse.
     """
     district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
@@ -45,7 +45,8 @@ def compute_bounding_box_score(district_blocks, gdf) -> float:
 
 def polsby_popper(district_blocks, gdf) -> float:
     """
-    (This is the corrected Polsby-Popper function)
+    Polsby–Popper compactness: 4πA / P^2 for the unioned district geometry.
+    This version correctly handles MultiPolygon objects.
     """
     district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
     union_geom = district_gdf.geometry.unary_union
@@ -53,6 +54,7 @@ def polsby_popper(district_blocks, gdf) -> float:
     if union_geom.is_empty:
         return 0.0
 
+    # This calculation works for both Polygon and MultiPolygon objects
     area = union_geom.area
     perim = union_geom.length
     
@@ -75,9 +77,8 @@ def objective(
     pop_tolerance_ratio: float,
 ) -> float:
     """
-    UPDATED: Objective function using a hybrid score.
-    It minimizes a weighted combination of inertia (population compactness)
-    and a bounding box penalty (geometric compactness).
+    The hybrid objective function. It minimizes a weighted combination of
+    inertia (population compactness) and a bounding box penalty (geometric compactness).
     """
     total_inertia_score = 0.0
     total_bbox_score = 0.0
@@ -89,9 +90,8 @@ def objective(
     POPULATION_PENALTY_WEIGHT = 1e15
 
     # --- Weights for the hybrid score (Soft Constraints) ---
-    # These can be tuned to prioritize one type of compactness over the other.
     INERTIA_WEIGHT = 1.0
-    BBOX_WEIGHT = 10000.0 # Weighted more heavily to encourage regular shapes
+    BBOX_WEIGHT = 10000.0 
 
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
@@ -117,12 +117,9 @@ def objective(
         # --- 3. Hybrid Compactness Score (Base Score) ---
         if num_components == 1:
             inertia = compute_inertia(d, gdf)
-            # Use log to scale down the massive inertia values
             total_inertia_score += np.log(1 + inertia) if inertia > 0 else 0
 
             bbox_score = compute_bounding_box_score(d, gdf)
-            # We want to MINIMIZE the objective, so we penalize bad bbox scores.
-            # (1 - score) converts a 0-1 (good) score to a 1-0 (bad) penalty.
             total_bbox_score += (1 - bbox_score)
         
     final_score = (
