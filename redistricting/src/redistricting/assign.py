@@ -6,11 +6,14 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 
-def _recursively_bisect_population(gdf_to_split, num_districts: int):
+def _recursively_bisect_population(gdf_to_split, num_districts: int, level=0):
     """
     Helper function to recursively split a GeoDataFrame into a target number of
     zones with roughly equal population.
     """
+    indent = "  " * level
+    logging.debug(f"{indent}Bisecting {len(gdf_to_split)} blocks into {num_districts} zones...")
+    
     if num_districts <= 1:
         return [gdf_to_split]
     
@@ -18,7 +21,8 @@ def _recursively_bisect_population(gdf_to_split, num_districts: int):
     min_x, min_y, max_x, max_y = gdf_to_split.total_bounds
     is_wider = (max_x - min_x) > (max_y - min_y)
     split_coord = 'x' if is_wider else 'y'
-    
+    logging.debug(f"{indent}Splitting zone along {split_coord}-axis.")
+
     # Sort blocks along the chosen axis
     sorted_gdf = gdf_to_split.sort_values(split_coord)
     
@@ -34,13 +38,14 @@ def _recursively_bisect_population(gdf_to_split, num_districts: int):
             split_index = index
             break
     
-    # Perform the split
-    if split_index == -1: # Handle empty or single-block zones
+    if split_index == -1:
         return [gdf_to_split]
 
     split_loc = sorted_gdf.index.get_loc(split_index)
     part1_gdf = sorted_gdf.iloc[:split_loc]
     part2_gdf = sorted_gdf.iloc[split_loc:]
+    
+    logging.debug(f"{indent}Split into two parts with populations {part1_gdf['P1_001N'].sum():,} and {part2_gdf['P1_001N'].sum():,}.")
     
     # Recursively call on the two halves
     num_districts_1 = round(num_districts / 2)
@@ -48,9 +53,9 @@ def _recursively_bisect_population(gdf_to_split, num_districts: int):
     
     zones = []
     if not part1_gdf.empty and num_districts_1 > 0:
-        zones.extend(_recursively_bisect_population(part1_gdf, num_districts_1))
+        zones.extend(_recursively_bisect_population(part1_gdf, num_districts_1, level + 1))
     if not part2_gdf.empty and num_districts_2 > 0:
-        zones.extend(_recursively_bisect_population(part2_gdf, num_districts_2))
+        zones.extend(_recursively_bisect_population(part2_gdf, num_districts_2, level + 1))
         
     return zones
 
@@ -85,31 +90,26 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         if zone_gdf.empty: continue
 
         seed_point = None
-        # Special rule for the last district if D is odd
-        if D % 2 != 0 and i == D - 1:
-            logging.info(f"Odd number of districts detected. Placing final seed at state's population center.")
+        if D % 2 != 0 and i == len(zones) - 1:
+            logging.debug(f"Odd number of districts detected. Placing final seed at state's population center.")
             state_pop = gdf['P1_001N'].sum()
             s_centroid_x = (gdf['x'] * gdf['P1_001N']).sum() / state_pop
             s_centroid_y = (gdf['y'] * gdf['P1_001N']).sum() / state_pop
             seed_point = (s_centroid_x, s_centroid_y)
         else:
-            # Find the part of the zone's border that is on the state's exterior
             zone_border_segment = zone_gdf.unary_union.boundary.intersection(state_boundary)
             if zone_border_segment.is_empty:
-                # If a zone has no exterior border, use its population centroid as a fallback
-                logging.warning(f"Zone {i+1} has no exterior border. Seeding from its population center instead.")
+                logging.debug(f"Zone {i+1} has no exterior border. Seeding from its population center instead.")
                 zone_pop = zone_gdf['P1_001N'].sum()
                 if zone_pop > 0:
                     centroid_x = (zone_gdf['x'] * zone_gdf['P1_001N']).sum() / zone_pop
                     centroid_y = (zone_gdf['y'] * zone_gdf['P1_001N']).sum() / zone_pop
                     seed_point = (centroid_x, centroid_y)
             else:
-                # Find the center point of that border segment
                 border_centroid = zone_border_segment.centroid
                 seed_point = (border_centroid.x, border_centroid.y)
 
         if seed_point:
-            # Find the actual block in the zone closest to the calculated seed point
             min_dist = float('inf')
             best_seed = None
             for _, block in zone_gdf.iterrows():
@@ -118,6 +118,7 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                     min_dist = dist_sq
                     best_seed = block['GEOID20']
             if best_seed:
+                logging.debug(f"Zone {i+1} seed chosen: GEOID20={best_seed}")
                 seeds.append(best_seed)
 
     pop_per_district = np.zeros(D)
@@ -140,11 +141,13 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         active_pops = [p if not districts_at_max_pop[i] else float('inf') for i, p in enumerate(pop_per_district)]
         
         if all(p == float('inf') for p in active_pops):
+            logging.debug("All districts are full or walled off. Ending growth phase.")
             break
             
         i = np.argmin(active_pops)
 
         if not queues[i]:
+            logging.debug(f"District {i+1} has no queue to expand from. Marking as full.")
             districts_at_max_pop[i] = True
             continue
 
@@ -155,6 +158,7 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
                     frontier.add(neighbor)
         
         if not frontier:
+            logging.debug(f"District {i+1} is walled off. Marking as full.")
             districts_at_max_pop[i] = True
             continue
 
@@ -162,6 +166,7 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         frontier_pop = sum(block_pop_map.get(b, 0) for b in frontier)
 
         if pop_per_district[i] + frontier_pop > max_pop:
+            logging.debug(f"District {i+1} cannot add next layer (pop {frontier_pop:,}) without exceeding max_pop. Marking as full.")
             districts_at_max_pop[i] = True
             visited.difference_update(frontier)
             continue
@@ -180,14 +185,20 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
         logging.warning(f"Consolidating {len(unassigned_blocks)} remaining trapped blocks...")
         unassigned_subgraph = G.subgraph(unassigned_blocks)
         islands = list(nx.connected_components(unassigned_subgraph))
+        logging.debug(f"Found {len(islands)} distinct island(s) of trapped blocks.")
+        
         membership = {b: i for i, d in enumerate(districts) for b in d if d}
 
-        for island in islands:
+        for j, island in enumerate(islands):
             island_pop = sum(block_pop_map.get(b, 0) for b in island)
+            logging.debug(f"Processing island {j+1}/{len(islands)} of {len(island)} blocks with population {island_pop:,}.")
+            
             external_neighbors = nx.node_boundary(G, island)
             neighbor_districts = {membership.get(n) for n in external_neighbors if membership.get(n) is not None}
+            logging.debug(f"  - Island neighbors: {[d+1 for d in neighbor_districts] if neighbor_districts else 'None'}")
 
             if not neighbor_districts:
+                logging.error(f"  - COULD NOT FIND NEIGHBOR for trapped island. Assigning to smallest district overall.")
                 smallest_dist_idx = np.argmin(pop_per_district)
                 districts[smallest_dist_idx].update(island)
                 pop_per_district[smallest_dist_idx] += island_pop
@@ -196,12 +207,17 @@ def initial_assignment(gdf, G, D: int, ideal_pop: float, pop_tolerance_ratio: fl
             valid_neighbors = {d_idx for d_idx in neighbor_districts if pop_per_district[d_idx] + island_pop <= max_pop}
             
             if valid_neighbors:
+                logging.debug(f"  - Valid (non-full) neighbors: {[d+1 for d in valid_neighbors]}")
                 best_neighbor = min(valid_neighbors, key=lambda d_idx: pop_per_district[d_idx])
+                logging.debug(f"  - Decision: Assigning island to the 'hungriest' valid neighbor, District {best_neighbor+1}.")
+                districts[best_neighbor].update(island)
+                pop_per_district[best_neighbor] += island_pop
             else:
-                best_neighbor = min(neighbor_districts, key=lambda d_idx: pop_per_district[d_idx] + island_pop)
-                
-            districts[best_neighbor].update(island)
-            pop_per_district[best_neighbor] += island_pop
+                logging.debug(f"  - Fallback: All neighbors are full. Assigning to the neighbor it overpopulates the least.")
+                best_neighbor = min(neighbor_districts, key=lambda d_idx: (pop_per_district[d_idx] + island_pop) - max_pop)
+                logging.debug(f"  - Decision: Assigning island to District {best_neighbor+1}.")
+                districts[best_neighbor].update(island)
+                pop_per_district[best_neighbor] += island_pop
 
     logging.info("Initial assignment complete.")
     return [list(d) for d in districts if d]
