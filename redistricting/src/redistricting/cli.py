@@ -10,8 +10,10 @@ from .config import Settings
 from .io import unzip_and_find_files, load_and_preprocess_data
 from .assign import initial_assignment
 from .optimize import fix_contiguity, powerful_balancer, perfect_map
-from .metrics import polsby_popper, is_contiguous, compute_inertia
-from .viz import plot_districts
+from .metrics import polsby_popper
+# --- THE FIX: 'print_debug_stats' is no longer imported from here directly ---
+# It will be imported from viz
+from .viz import plot_districts, print_debug_stats
 
 
 def parse_args():
@@ -55,29 +57,8 @@ def setup_logging(debug: bool):
     )
     logging.info(f"Detailed log being saved to: {log_filename}")
 
-
-def print_debug_stats(phase_name: str, districts, gdf, G):
-    """Helper function to print district stats during debug runs."""
-    header = f" DEBUG STATS: After {phase_name} "
-    logging.info("\n" + header.center(80, "-"))
-    
-    for i, d in enumerate(districts):
-        if not d:
-            logging.info(f"District {i+1}: EMPTY")
-            continue
-            
-        d_pop = sum(G.nodes[b]["pop"] for b in d)
-        d_pp = polsby_popper(d, gdf)
-        d_inertia = compute_inertia(d, gdf)
-        d_contig = is_contiguous(d, G)
-        logging.info(
-            f"District {i+1}: Pop = {d_pop:<9,} | "
-            f"PP = {d_pp:.4f} | "
-            f"Inertia = {d_inertia:.2e} | "
-            f"Contiguous = {d_contig}"
-        )
-    logging.info("-" * 80 + "\n")
-
+# --- THE FIX: The print_debug_stats function is CUT from this file ---
+# --- and moved to viz.py ---
 
 def main():
     args = parse_args()
@@ -97,7 +78,6 @@ def main():
         f"Ideal pop: {ideal_pop:.2f}"
     )
     
-    logging.info("Starting Stage 0: Initial Assignment...")
     initial = initial_assignment(
         gdf, G, D, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
@@ -106,13 +86,11 @@ def main():
         plot_districts(gdf, initial, st.name, scode, output_filename=f"debug_1_initial_{scode}.png")
         print_debug_stats("Initial Assignment", initial, gdf, G)
 
-    logging.info("Starting Stage 1: Contiguity Repair...")
     contiguous_map = fix_contiguity(initial, gdf, G)
     if args.debug:
         plot_districts(gdf, contiguous_map, st.name, scode, output_filename=f"debug_2_contiguous_{scode}.png")
         print_debug_stats("Contiguity Repair", contiguous_map, gdf, G)
 
-    logging.info("Starting Stage 2: Powerful Balancing...")
     balanced_map = powerful_balancer(
         contiguous_map, gdf, G, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
@@ -121,9 +99,6 @@ def main():
         plot_districts(gdf, balanced_map, st.name, scode, output_filename=f"debug_3_balanced_{scode}.png")
         print_debug_stats("Powerful Balancing", balanced_map, gdf, G)
 
-    logging.info("Starting Stage 3: Final Perfecting...")
-    # --- THE FIX ---
-    # Update the function call to pass the new arguments needed for the intermediate debug step
     final_map, final_score = perfect_map(
         balanced_map, gdf, G, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
@@ -131,7 +106,6 @@ def main():
         scode=scode,
         debug=args.debug
     )
-    # --- END FIX ---
     
     final_sorted = [sorted(list(d)) for d in final_map]
     final_sorted.sort()
