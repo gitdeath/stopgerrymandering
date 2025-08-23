@@ -10,14 +10,16 @@ from .metrics import objective, is_contiguous, compute_inertia
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
     """
-    Stage 1: Finds and repairs non-contiguous districts using a population-aware
-    rule to preserve balance.
+    An efficient version of the contiguity fixer. It corrects any major
+    contiguity issues (islands) without getting bogged down in a slow
+    smoothing pass.
     """
+    logging.info("Starting Stage 1: Contiguity Repair...")
     current_districts = [set(d) for d in districts]
     
-    while True:
-        fixes_made_in_pass = 0
-        
+    fixes_made = True
+    while fixes_made:
+        fixes_made = False
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current_districts]
         membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
         
@@ -29,6 +31,7 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
             if len(components) <= 1:
                 continue
 
+            fixes_made = True # A fix is needed, so we'll loop again
             components.sort(key=len, reverse=True)
             main_component = components[0]
             islands = components[1:]
@@ -51,52 +54,19 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
                     f"CONTIGUITY FIX: Moving an island of {len(island)} blocks from District {i+1} "
                     f"to its least populated neighbor, District {best_neighbor_dist+1}."
                 )
-
                 current_districts[best_neighbor_dist].update(island)
-                fixes_made_in_pass += len(island)
-
-        if fixes_made_in_pass == 0:
-            break
-            
-    logging.info("Starting final contiguity cleanup pass...")
-    smoothed_districts = [set(d) for d in current_districts]
-    membership = {block: i for i, dist in enumerate(smoothed_districts) for block in dist}
-    pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in smoothed_districts]
     
-    for block in sorted(list(G.nodes())):
-        current_district_idx = membership.get(block)
-        if current_district_idx is None: continue
-
-        neighbor_districts = [membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None]
-        if not neighbor_districts: continue
-        
-        if len(set(neighbor_districts)) > 1:
-            best_neighbor = min(set(neighbor_districts), key=lambda d_idx: pop_per_district[d_idx])
-        else:
-            best_neighbor = neighbor_districts[0]
-
-        if current_district_idx != best_neighbor:
-            source_district = smoothed_districts[current_district_idx]
-            if len(source_district) > 1 and not is_contiguous(source_district - {block}, G):
-                continue 
-
-            smoothed_districts[current_district_idx].remove(block)
-            smoothed_districts[best_neighbor].add(block)
-            pop_per_district[current_district_idx] -= G.nodes[block]["pop"]
-            pop_per_district[best_neighbor] += G.nodes[block]["pop"]
-            membership[block] = best_neighbor
-    
-    for i, d in enumerate(smoothed_districts):
+    for i, d in enumerate(current_districts):
         if d and not is_contiguous(d, G):
-            raise RuntimeError(f"Contiguity fix failed for District {i+1} even after smoothing.")
+            raise RuntimeError(f"Contiguity fix failed for District {i+1}.")
 
     logging.info("Contiguity repair complete.")
-    return [list(d) for d in smoothed_districts]
+    return [list(d) for d in current_districts]
 
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    Stage 2: A powerful, resilient balancer that finds ANY valid pair of over/under
+    A powerful, resilient balancer that finds ANY valid pair of over/under
     populated districts that are neighbors and transfers population between them.
     """
     current = [set(d) for d in districts]
@@ -184,7 +154,7 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
 
 def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    Stage 3: The final, meticulous optimization using the new hybrid score.
+    Stage 3: The final, meticulous optimization using the hybrid score.
     """
     current = [set(d) for d in districts]
     current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
