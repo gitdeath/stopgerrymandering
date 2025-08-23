@@ -24,14 +24,12 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
         membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
         
         for i, district in enumerate(current_districts):
-            if not district:
-                continue
+            if not district: continue
 
             components = list(nx.connected_components(G.subgraph(district)))
-            if len(components) <= 1:
-                continue
+            if len(components) <= 1: continue
 
-            fixes_made = True # A fix is needed, so we'll loop again
+            fixes_made = True
             components.sort(key=len, reverse=True)
             main_component = components[0]
             islands = components[1:]
@@ -69,6 +67,7 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     A powerful, resilient balancer that finds ANY valid pair of over/under
     populated districts that are neighbors and transfers population between them.
     """
+    logging.info("Starting Stage 2: Powerful Balancing...")
     current = [set(d) for d in districts]
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
@@ -105,7 +104,6 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
         pop_surplus = pop_per_district[source_idx] - max_pop
         pop_needed = min_pop - pop_per_district[target_idx]
         chunk_target_pop = min(pop_needed, pop_surplus, ideal_pop * 0.02)
-
         border_blocks = sorted(list({b for b in current[source_idx] if any(n in current[target_idx] for n in G.neighbors(b))}))
         
         chunk_to_move = None
@@ -119,11 +117,9 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
             while queue:
                 block = queue.pop(0)
                 block_pop = G.nodes[block]["pop"]
-                
                 if chunk_pop + block_pop > chunk_target_pop: continue
                 chunk.add(block)
                 chunk_pop += block_pop
-                
                 for neighbor in G.neighbors(block):
                     if neighbor in current[source_idx] and neighbor not in visited:
                         visited.add(neighbor)
@@ -132,7 +128,6 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
             if chunk:
                 source_after_move = current[source_idx] - chunk
                 target_after_move = current[target_idx] | chunk
-                
                 if is_contiguous(source_after_move, G) and is_contiguous(target_after_move, G):
                     chunk_to_move = chunk
                     break
@@ -144,7 +139,9 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
             current[target_idx] |= chunk_to_move
         else:
             logging.warning(f"Balancer searched border between D{source_idx+1} and D{target_idx+1} but could not find a valid chunk. Trying next pair.")
-            break 
+            # --- THE BUG FIX ---
+            # This was 'break', now it's 'continue' to allow the loop to try other pairs.
+            continue
     else:
         logging.warning("Balancer reached iteration limit.")
 
@@ -156,23 +153,34 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
     Stage 3: The final, meticulous optimization using the hybrid score.
     """
+    logging.info("Starting Stage 3: Final Perfecting...")
     current = [set(d) for d in districts]
     current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
     logging.info(f"Final perfecting starting score: {current_score:.2f}")
 
-    iteration = 0
-    while True:
-        iteration += 1
+    MAX_PERFECTING_ITERATIONS = 50
+    for iteration in range(1, MAX_PERFECTING_ITERATIONS + 1):
         best_move, best_delta = None, 0.0
         membership = {b: i for i, d in enumerate(current) for b in d}
         
-        all_border_blocks = {
+        all_border_blocks = list({
             b for i, d in enumerate(current) for b in d 
             if any(membership.get(n) is not None and membership.get(n) != i for n in G.neighbors(b))
-        }
+        })
 
-        for block in all_border_blocks:
+        # --- THE PERFORMANCE FIX ---
+        # Instead of checking all border blocks, check a large random sample.
+        SAMPLE_SIZE = 2000
+        if len(all_border_blocks) > SAMPLE_SIZE:
+            blocks_to_check = random.sample(all_border_blocks, SAMPLE_SIZE)
+        else:
+            blocks_to_check = all_border_blocks
+        
+        logging.debug(f"Perfecting Iteration {iteration}: Checking {len(blocks_to_check)} border blocks for improvements...")
+
+        for block in blocks_to_check:
             from_idx = membership.get(block)
+            if from_idx is None: continue
             
             neighbor_districts = {
                 membership[n] for n in G.neighbors(block) if membership.get(n) is not None and membership[n] != from_idx
@@ -200,5 +208,8 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
         else:
             logging.info(f"Perfecting Iteration {iteration}: No further improvements found.")
             break
+    else:
+        logging.warning("Perfecting stage reached iteration limit.")
+
 
     return [list(d) for d in current], current_score
