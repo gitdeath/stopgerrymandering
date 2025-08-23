@@ -10,15 +10,12 @@ from .metrics import objective, is_contiguous, compute_inertia
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
     """
-    Stage 1: Finds and repairs non-contiguous districts using a population-aware
-    rule to preserve balance.
+    (This is the final, population-aware contiguity fixer)
     """
     current_districts = [set(d) for d in districts]
     
     while True:
         fixes_made_in_pass = 0
-        
-        # --- FIX: Pre-calculate populations to make population-aware decisions ---
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current_districts]
         membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
         
@@ -46,9 +43,6 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
                     current_districts[i].update(island)
                     continue
 
-                # --- THE CRITICAL FIX ---
-                # Old rule: Give to most-touching neighbor.
-                # New rule: Give to the neighbor with the lowest population.
                 best_neighbor_dist = min(neighbor_districts, key=lambda d_idx: pop_per_district[d_idx])
                 
                 logging.warning(
@@ -62,12 +56,10 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
         if fixes_made_in_pass == 0:
             break
             
-    # Smoothing pass remains the same
     logging.info("Starting final contiguity cleanup pass...")
-    # ... (smoothing logic is unchanged but included for completeness)
     smoothed_districts = [set(d) for d in current_districts]
     membership = {block: i for i, dist in enumerate(smoothed_districts) for block in dist}
-    pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in smoothed_districts] # Recalculate pops
+    pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in smoothed_districts]
     
     for block in sorted(list(G.nodes())):
         current_district_idx = membership.get(block)
@@ -75,8 +67,7 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
 
         neighbor_districts = [membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None]
         if not neighbor_districts: continue
-
-        # Give block to smallest neighboring district
+        
         if len(set(neighbor_districts)) > 1:
             best_neighbor = min(set(neighbor_districts), key=lambda d_idx: pop_per_district[d_idx])
         else:
@@ -103,7 +94,7 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    (This is the flexible "bucket brigade" balancer from our previous discussion)
+    (This is the final, flexible "bucket brigade" balancer)
     """
     current = [set(d) for d in districts]
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
@@ -142,10 +133,7 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
         pop_needed = min_pop - pop_per_district[target_idx]
         chunk_target_pop = min(pop_needed, pop_surplus, ideal_pop * 0.02)
 
-        border_blocks = sorted(list({
-            b for b in current[source_idx] 
-            if any(n in current[target_idx] for n in G.neighbors(b))
-        }))
+        border_blocks = sorted(list({b for b in current[source_idx] if any(n in current[target_idx] for n in G.neighbors(b))}))
         
         chunk_to_move = None
         
@@ -191,12 +179,12 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     return [list(d) for d in current]
 
 
-def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold):
+def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    (This function is unchanged)
+    Stage 3: The final, meticulous optimization using the new hybrid score.
     """
     current = [set(d) for d in districts]
-    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+    current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
     logging.info(f"Final perfecting starting score: {current_score:.2f}")
 
     iteration = 0
@@ -204,21 +192,29 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_t
         iteration += 1
         best_move, best_delta = None, 0.0
         membership = {b: i for i, d in enumerate(current) for b in d}
-        all_blocks = list(G.nodes)
+        
+        all_border_blocks = {
+            b for i, d in enumerate(current) for b in d 
+            if any(membership.get(n) is not None and membership.get(n) != i for n in G.neighbors(b))
+        }
 
-        for block in all_blocks:
+        for block in all_border_blocks:
             from_idx = membership.get(block)
-            if from_idx is None: continue
+            
             neighbor_districts = {
-                membership.get(n) for n in G.neighbors(block)
-                if membership.get(n) is not None and membership[n] != from_idx
+                membership[n] for n in G.neighbors(block) if membership.get(n) is not None and membership[n] != from_idx
             }
 
             for to_idx in neighbor_districts:
                 trial = [set(d) for d in current]
                 trial[from_idx].remove(block)
                 trial[to_idx].add(block)
-                new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio, compactness_threshold)
+                
+                # Check contiguity before scoring to avoid massive penalty calculations
+                if not is_contiguous(trial[from_idx], G):
+                    continue
+                
+                new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio)
                 delta = current_score - new_score
                 if delta > best_delta:
                     best_delta, best_move = delta, (block, from_idx, to_idx)
