@@ -73,7 +73,6 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
         for source_idx in over_populated_districts:
             for target_idx in under_populated_districts:
                 border_blocks = sorted(list({b for b in current[source_idx] if any(n in current[target_idx] for n in G.neighbors(b))}))
-
                 if not border_blocks: continue
 
                 pop_surplus = pop_per_district[source_idx] - max_pop
@@ -137,66 +136,76 @@ def _calculate_fast_score(districts, G, ideal_pop):
 
 def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    Final optimizer with a two-pass 'fast first' approach. The fast pass uses
-    a targeted search on the most imbalanced district. The slow pass polishes
-    the full map with the hybrid score.
+    Final optimizer with an exhaustive, targeted Fast Pass and a Slow Pass for polishing.
     """
-    logging.info("Starting Stage 3: Final Perfecting...")
     current = [set(d) for d in districts]
     
-    # --- PASS 1: TARGETED FAST PASS ---
-    logging.info("Perfecting Pass 1: Running targeted, population-only optimization...")
-    MAX_FAST_PASS_ITERATIONS = 100 
-    for iteration in range(1, MAX_FAST_PASS_ITERATIONS + 1):
-        
+    # --- PASS 1: EXHAUSTIVE FAST PASS ---
+    logging.info("Perfecting Pass 1: Running exhaustive, population-only optimization...")
+    fast_pass_iteration = 0
+    while True:
+        fast_pass_iteration += 1
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current]
+        
+        min_pop = ideal_pop * (1 - pop_tolerance_ratio)
+        max_pop = ideal_pop * (1 + pop_tolerance_ratio)
+        
+        imbalanced_districts = {
+            i for i, p in enumerate(pop_per_district) if not (min_pop <= p <= max_pop)
+        }
+
+        if not imbalanced_districts:
+            logging.info("Fast Pass complete: All districts are within population tolerance.")
+            break
+
         pop_devs = [(abs(p - ideal_pop), i) for i, p in enumerate(pop_per_district)]
-        
-        # --- NEW: Identify the district that is most "out of bounds" ---
         worst_dev, worst_idx = max(pop_devs)
-        logging.debug(f"Fast Pass Iteration {iteration}: Targeting D{worst_idx+1} (deviation: {worst_dev:,.0f}).")
+
+        logging.debug(f"Fast Pass Iteration {fast_pass_iteration}: Targeting D{worst_idx+1} (deviation: {worst_dev:,.0f}).")
         
-        current_score = (worst_dev) ** 2 # We only need to track the score of the district we're fixing
-        best_move, move_applied = None, False
+        move_applied = False
         membership = {b: i for i, d in enumerate(current) for b in d}
         
-        # --- NEW: Only check blocks on the border of the worst district ---
         border_blocks_of_worst_dist = list({
             b for b in current[worst_idx] 
             if any(membership.get(n) is not None and membership.get(n) != worst_idx for n in G.neighbors(b))
         })
         
-        SAMPLE_SIZE = 750
-        blocks_to_check = random.sample(border_blocks_of_worst_dist, min(len(border_blocks_of_worst_dist), SAMPLE_SIZE))
+        random.shuffle(border_blocks_of_worst_dist) # Check in a random order
 
-        for block in blocks_to_check:
+        for block in border_blocks_of_worst_dist:
             from_idx = worst_idx
+            # Find the neighbor that would benefit most from this block
+            best_neighbor_to_move_to = -1
+            best_neighbor_score = (abs(pop_per_district[from_idx] - ideal_pop))**2
+            
             for to_idx in {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None and membership.get(n) != from_idx}:
-                trial = [set(d) for d in current]
-                trial[from_idx].remove(block)
-                trial[to_idx].add(block)
-                if not is_contiguous(trial[from_idx], G): continue
+                block_pop = G.nodes[block]["pop"]
+                new_from_pop = pop_per_district[from_idx] - block_pop
+                new_to_pop = pop_per_district[to_idx] + block_pop
                 
-                new_score = (abs(sum(G.nodes[b]["pop"] for b in trial[from_idx]) - ideal_pop))**2 + \
-                            (abs(sum(G.nodes[b]["pop"] for b in trial[to_idx]) - ideal_pop))**2
-                old_score = (abs(pop_per_district[from_idx] - ideal_pop))**2 + \
-                            (abs(pop_per_district[to_idx] - ideal_pop))**2
-
+                old_score = (abs(pop_per_district[from_idx] - ideal_pop))**2 + (abs(pop_per_district[to_idx] - ideal_pop))**2
+                new_score = (abs(new_from_pop - ideal_pop))**2 + (abs(new_to_pop - ideal_pop))**2
+                
                 if new_score < old_score:
-                    # --- NEW: "First Improvement" Strategy ---
-                    best_move = (block, from_idx, to_idx)
-                    current[from_idx].remove(best_move[0])
-                    current[to_idx].add(best_move[0])
-                    move_applied = True
-                    logging.debug(f"  - Fast Pass move applied.")
-                    break # Apply first good move found
-            if move_applied:
-                break # Start new iteration
+                    trial_dist = current[from_idx] - {block}
+                    if is_contiguous(trial_dist, G):
+                        best_neighbor_to_move_to = to_idx
+                        best_neighbor_score = new_score # This is a placeholder, as we break
+                        break # Found a good enough neighbor
+
+            if best_neighbor_to_move_to != -1:
+                to_idx = best_neighbor_to_move_to
+                current[from_idx].remove(block)
+                current[to_idx].add(block)
+                move_applied = True
+                logging.debug(f"  - Fast Pass move applied: Moved block from D{from_idx+1} to D{to_idx+1}.")
+                break 
 
         if not move_applied:
-            logging.info("Fast Pass: No further population improvements found for the worst district.")
+            logging.info(f"Fast Pass: No improving moves found for any imbalanced district. Concluding pass.")
             break
-
+            
     # --- PASS 2: SLOW SHAPE POLISHING ---
     logging.info("Perfecting Pass 2: Running full hybrid-score optimization...")
     current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
@@ -234,7 +243,7 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
             current_score -= best_delta
             logging.info(f"Slow Pass Iteration {iteration}: Applied best move. New hybrid score: {current_score:.2f}")
         else:
-            logging.info("Slow Pass: No further shape improvements found.")
+            logging.info(f"Slow Pass: No further shape improvements found.")
             break
             
     logging.info("Final perfecting complete.")
