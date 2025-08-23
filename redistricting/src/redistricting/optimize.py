@@ -10,12 +10,14 @@ from .metrics import objective, is_contiguous, compute_inertia
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
     """
-    (This is the final, population-aware contiguity fixer)
+    Stage 1: Finds and repairs non-contiguous districts using a population-aware
+    rule to preserve balance.
     """
     current_districts = [set(d) for d in districts]
     
     while True:
         fixes_made_in_pass = 0
+        
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current_districts]
         membership = {block: i for i, dist in enumerate(current_districts) for block in dist}
         
@@ -94,7 +96,8 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     """
-    (This is the final, flexible "bucket brigade" balancer)
+    Stage 2: A powerful, resilient balancer that finds ANY valid pair of over/under
+    populated districts that are neighbors and transfers population between them.
     """
     current = [set(d) for d in districts]
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
@@ -210,7 +213,6 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
                 trial[from_idx].remove(block)
                 trial[to_idx].add(block)
                 
-                # Check contiguity before scoring to avoid massive penalty calculations
                 if not is_contiguous(trial[from_idx], G):
                     continue
                 
