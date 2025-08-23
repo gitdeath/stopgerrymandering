@@ -7,7 +7,7 @@ import networkx as nx
 from functools import partial
 import multiprocessing
 
-from .metrics import objective, is_contiguous, _calculate_fast_score
+from .metrics import objective, is_contiguous
 from .viz import plot_districts, print_debug_stats
 
 
@@ -127,11 +127,9 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
     return [list(d) for d in current]
 
 
-# --- NEW: WORKER FUNCTION FOR PARALLEL PROCESSING ---
-# This function must be at the top level of the module to be used by multiprocessing.
-def _evaluate_move_worker(block, current_districts, pop_per_district, membership, G, gdf, ideal_pop, pop_tolerance_ratio, use_fast_score):
+def _evaluate_move_worker(block, current_districts, membership, G, gdf, ideal_pop, pop_tolerance_ratio):
     """
-    Analyzes all possible moves for a single block and returns the best one found.
+    Worker function for parallel processing in the Slow Pass.
     """
     best_move_for_block = None
     best_delta_for_block = 0.0
@@ -140,15 +138,7 @@ def _evaluate_move_worker(block, current_districts, pop_per_district, membership
     if from_idx is None:
         return None, 0.0
 
-    current_score = 0
-    if use_fast_score:
-        # For the fast pass, the "score" is just the combined deviation of the two districts involved
-        # This is calculated inside the loop.
-        pass
-    else:
-        # We need a baseline score to compare against
-        current_score = objective(current_districts, gdf, G, ideal_pop, pop_tolerance_ratio)
-
+    current_score = objective(current_districts, gdf, G, ideal_pop, pop_tolerance_ratio)
     neighbor_districts = {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None and membership.get(n) != from_idx}
 
     for to_idx in neighbor_districts:
@@ -159,14 +149,8 @@ def _evaluate_move_worker(block, current_districts, pop_per_district, membership
         if not is_contiguous(trial[from_idx], G):
             continue
 
-        if use_fast_score:
-            block_pop = G.nodes[block]["pop"]
-            old_pair_score = (abs(pop_per_district[from_idx] - ideal_pop))**2 + (abs(pop_per_district[to_idx] - ideal_pop))**2
-            new_pair_score = (abs(pop_per_district[from_idx] - block_pop - ideal_pop))**2 + (abs(pop_per_district[to_idx] + block_pop - ideal_pop))**2
-            delta = old_pair_score - new_pair_score
-        else: # Use the full, slow, hybrid objective score
-            new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio)
-            delta = current_score - new_score
+        new_score = objective(trial, gdf, G, ideal_pop, pop_tolerance_ratio)
+        delta = current_score - new_score
 
         if delta > best_delta_for_block:
             best_delta_for_block = delta
@@ -177,67 +161,70 @@ def _evaluate_move_worker(block, current_districts, pop_per_district, membership
 
 def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, debug):
     """
-    Final optimizer, now with parallel processing for the slow shape-polishing pass.
+    Final optimizer with a "good enough" Fast Pass and a parallelized Slow Pass.
     """
     current = [set(d) for d in districts]
     
     # --- PASS 1: EXHAUSTIVE, TARGETED FAST PASS ---
-    # This pass is sequential because each move depends on the last.
     logging.info("Perfecting Pass 1: Running exhaustive, population-only optimization...")
-    # ... (Fast Pass logic remains the same) ...
-    
-    # --- PASS 2: PARALLELIZED SLOW SHAPE POLISHING ---
-    logging.info("Perfecting Pass 2: Running parallelized, full hybrid-score optimization...")
-    
-    MAX_SLOW_PASS_ITERATIONS = 30
-    for iteration in range(1, MAX_SLOW_PASS_ITERATIONS + 1):
-        current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
-        logging.info(f"Slow Pass Iteration {iteration}: Starting score {current_score:.2f}")
-
-        membership = {b: i for i, d in enumerate(current) for b in d}
-        all_border_blocks = list({b for d in current for b in d if any(membership.get(n) is not None and membership.get(n) != membership[b] for n in G.neighbors(b))})
-
-        SAMPLE_SIZE = 500
-        blocks_to_check = random.sample(all_border_blocks, min(len(all_border_blocks), SAMPLE_SIZE))
+    while True:
+        pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current]
+        min_pop = ideal_pop * (1 - pop_tolerance_ratio)
+        max_pop = ideal_pop * (1 + pop_tolerance_ratio)
         
-        logging.debug(f"  - Distributing analysis of {len(blocks_to_check)} blocks across CPU cores...")
+        imbalanced_districts_with_dev = [
+            (abs(p - ideal_pop), i) for i, p in enumerate(pop_per_district) 
+            if not (min_pop <= p <= max_pop)
+        ]
 
-        # --- THE PARALLELIZATION LOGIC ---
-        # Create a partial function with all the fixed arguments for the worker
-        task = partial(
-            _evaluate_move_worker, 
-            current_districts=current,
-            pop_per_district=None, # Not used in slow pass
-            membership=membership, 
-            G=G, 
-            gdf=gdf, 
-            ideal_pop=ideal_pop, 
-            pop_tolerance_ratio=pop_tolerance_ratio,
-            use_fast_score=False
-        )
-
-        best_move = None
-        best_delta = 0.0
-        
-        # Create a pool of workers and map the task to them
-        with multiprocessing.Pool() as pool:
-            results = pool.map(task, blocks_to_check)
-
-        # Find the best move from all the results returned by the workers
-        for move, delta in results:
-            if delta > best_delta:
-                best_delta = delta
-                best_move = move
-        # --- END PARALLELIZATION LOGIC ---
-
-        if best_move:
-            b, fidx, tidx = best_move
-            current[fidx].remove(b)
-            current[tidx].add(b)
-            logging.info(f"  - Applied best move. New hybrid score: {current_score - best_delta:.2f}")
-        else:
-            logging.info("Slow Pass: No further shape improvements found.")
+        if not imbalanced_districts_with_dev:
+            logging.info("Fast Pass complete: All districts are within population tolerance.")
             break
+
+        imbalanced_districts_with_dev.sort(key=lambda x: x[0], reverse=True)
+        
+        move_made_this_pass = False
+        membership = {b: i for i, d in enumerate(current) for b in d}
+
+        for _, district_to_fix_idx in imbalanced_districts_with_dev:
+            is_over_populated = pop_per_district[district_to_fix_idx] > ideal_pop
             
-    logging.info("Final perfecting complete.")
-    return [list(d) for d in current], objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
+            search_space = []
+            if is_over_populated:
+                search_space = list({b for b in current[district_to_fix_idx] if any(membership.get(n) != district_to_fix_idx for n in G.neighbors(b))})
+            else:
+                neighbors_of_worst = {n for b in current[district_to_fix_idx] for n in G.neighbors(b) if membership.get(n) != district_to_fix_idx}
+                search_space = list(neighbors_of_worst)
+
+            random.shuffle(search_space)
+
+            for block in search_space:
+                from_idx, to_idx = -1, -1
+                if is_over_populated:
+                    from_idx = district_to_fix_idx
+                    candidates = {membership.get(n) for n in G.neighbors(block) if membership.get(n) is not None and n not in current[from_idx]}
+                    if not candidates: continue
+                    to_idx = min(candidates, key=lambda n_idx: pop_per_district[n_idx])
+                else: 
+                    to_idx = district_to_fix_idx
+                    from_idx = membership.get(block)
+                    if from_idx is None: continue
+
+                # --- THE "GOOD ENOUGH" FIX ---
+                # If both districts are already in the legal zone, don't make the move.
+                from_pop = pop_per_district[from_idx]
+                to_pop = pop_per_district[to_idx]
+                if (min_pop <= from_pop <= max_pop) and (min_pop <= to_pop <= max_pop):
+                    continue
+                # --- END FIX ---
+                
+                block_pop = G.nodes[block]["pop"]
+                old_score = (abs(from_pop - ideal_pop))**2 + (abs(to_pop - ideal_pop))**2
+                new_score = (abs(from_pop - block_pop - ideal_pop))**2 + (abs(to_pop + block_pop - ideal_pop))**2
+                
+                if new_score < old_score:
+                    if is_contiguous(current[from_idx] - {block}, G):
+                        current[from_idx].remove(block)
+                        current[to_idx].add(block)
+                        move_made_this_pass = True
+                        logging.debug(f"  - Fast Pass move applied: D{from_idx+1} ->
