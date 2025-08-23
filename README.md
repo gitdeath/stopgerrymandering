@@ -6,6 +6,8 @@ This project solves the complex problem of creating political districts from a s
 ---
 
 ## **Inputs**
+* "2020.pl.zip" State File From: https://www2.census.gov/programs-surveys/decennial/2020/data/01-Redistricting_File--PL_94-171/
+* "tabblock20.zip" State File From: https://www2.census.gov/geo/tiger/TIGER2020PL/STATE/
 
 ### 1. The Required Input Files
 - **Technical Summary**: The program requires two specific types of `.zip` files from the U.S. Census Bureau for a given state.
