@@ -8,7 +8,7 @@ from shapely.geometry import Polygon, MultiPolygon
 
 def compute_inertia(district_blocks, gdf) -> float:
     """
-    (This function is unchanged)
+    Population-weighted moment of inertia about the district's pop-weighted centroid.
     """
     district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
     total_pop = district_gdf["P1_001N"].astype(int).sum()
@@ -22,12 +22,10 @@ def compute_inertia(district_blocks, gdf) -> float:
     ).sum()
     return float(inertia)
 
-
-def polsby_popper(district_blocks, gdf) -> float:
+def compute_bounding_box_score(district_blocks, gdf) -> float:
     """
-    (This is the corrected Polsby-Popper function)
-    Polsby–Popper compactness: 4πA / P^2 for the unioned district geometry.
-    This version correctly handles MultiPolygon objects.
+    NEW: Measures how well a district fills its rectangular bounding box.
+    Score of 1.0 is a perfect rectangle. Lower is worse.
     """
     district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
     union_geom = district_gdf.geometry.unary_union
@@ -35,7 +33,26 @@ def polsby_popper(district_blocks, gdf) -> float:
     if union_geom.is_empty:
         return 0.0
 
-    # This calculation works for both Polygon and MultiPolygon objects
+    district_area = union_geom.area
+    bounding_box = union_geom.envelope # The minimum bounding rectangle
+    box_area = bounding_box.area
+
+    if box_area == 0:
+        return 0.0
+        
+    return district_area / box_area
+
+
+def polsby_popper(district_blocks, gdf) -> float:
+    """
+    (This is the corrected Polsby-Popper function)
+    """
+    district_gdf = gdf[gdf["GEOID20"].isin(district_blocks)]
+    union_geom = district_gdf.geometry.unary_union
+    
+    if union_geom.is_empty:
+        return 0.0
+
     area = union_geom.area
     perim = union_geom.length
     
@@ -43,7 +60,7 @@ def polsby_popper(district_blocks, gdf) -> float:
 
 
 def is_contiguous(district_blocks, G: nx.Graph) -> bool:
-    """(This function is unchanged)"""
+    """A district is contiguous if its induced subgraph is connected."""
     if not district_blocks:
         return False
     sub = G.subgraph(district_blocks)
@@ -56,17 +73,25 @@ def objective(
     G: nx.Graph,
     ideal_pop: float,
     pop_tolerance_ratio: float,
-    compactness_threshold: float,
 ) -> float:
     """
-    (This function is unchanged)
+    UPDATED: Objective function using a hybrid score.
+    It minimizes a weighted combination of inertia (population compactness)
+    and a bounding box penalty (geometric compactness).
     """
-    total_inertia = 0.0
+    total_inertia_score = 0.0
+    total_bbox_score = 0.0
     population_penalty = 0.0
     contiguity_penalty = 0.0
     
+    # --- Huge penalties for illegal maps (Hard Constraints) ---
     CONTIGUITY_PENALTY_WEIGHT = 1e18
     POPULATION_PENALTY_WEIGHT = 1e15
+
+    # --- Weights for the hybrid score (Soft Constraints) ---
+    # These can be tuned to prioritize one type of compactness over the other.
+    INERTIA_WEIGHT = 1.0
+    BBOX_WEIGHT = 10000.0 # Weighted more heavily to encourage regular shapes
 
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
@@ -76,22 +101,33 @@ def objective(
             population_penalty += min_pop ** 2
             continue
         
+        # --- 1. Contiguity Penalty (Highest Priority) ---
         sub = G.subgraph(d)
         num_components = nx.number_connected_components(sub)
         if num_components > 1:
             contiguity_penalty += (num_components - 1)
 
+        # --- 2. Population Penalty (Second Priority) ---
         district_pop = sum(int(G.nodes[b]["pop"]) for b in d)
         if district_pop < min_pop:
             population_penalty += (min_pop - district_pop) ** 2
         elif district_pop > max_pop:
             population_penalty += (district_pop - max_pop) ** 2
         
+        # --- 3. Hybrid Compactness Score (Base Score) ---
         if num_components == 1:
-            total_inertia += compute_inertia(d, gdf)
+            inertia = compute_inertia(d, gdf)
+            # Use log to scale down the massive inertia values
+            total_inertia_score += np.log(1 + inertia) if inertia > 0 else 0
+
+            bbox_score = compute_bounding_box_score(d, gdf)
+            # We want to MINIMIZE the objective, so we penalize bad bbox scores.
+            # (1 - score) converts a 0-1 (good) score to a 1-0 (bad) penalty.
+            total_bbox_score += (1 - bbox_score)
         
     final_score = (
-        total_inertia +
+        (total_inertia_score * INERTIA_WEIGHT) +
+        (total_bbox_score * BBOX_WEIGHT) +
         (population_penalty * POPULATION_PENALTY_WEIGHT) +
         (contiguity_penalty * CONTIGUITY_PENALTY_WEIGHT)
     )
