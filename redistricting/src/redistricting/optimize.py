@@ -14,7 +14,6 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
     contiguity issues (islands) without getting bogged down in a slow
     smoothing pass.
     """
-    logging.info("Starting Stage 1: Contiguity Repair...")
     current_districts = [set(d) for d in districts]
     
     fixes_made = True
