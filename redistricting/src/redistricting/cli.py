@@ -15,7 +15,7 @@ from .viz import plot_districts
 
 
 def parse_args():
-    # ... (this function is unchanged)
+    # This function is unchanged
     parser = argparse.ArgumentParser(
         description="Redistricting algorithm using local zipped files"
     )
@@ -42,7 +42,7 @@ def parse_args():
 
 
 def setup_logging(debug: bool):
-    # ... (this function is unchanged)
+    # This function is unchanged
     log_filename = "redistricting_run.log"
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
@@ -80,7 +80,6 @@ def print_debug_stats(phase_name: str, districts, gdf, G):
 
 
 def main():
-    # ... (this function is unchanged)
     args = parse_args()
     setup_logging(args.debug)
     settings = Settings.load(args.config)
@@ -97,6 +96,8 @@ def main():
         f"Starting redistricting for {st.name} with {D} districts. "
         f"Ideal pop: {ideal_pop:.2f}"
     )
+    
+    logging.info("Starting Stage 0: Initial Assignment...")
     initial = initial_assignment(
         gdf, G, D, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
@@ -104,11 +105,13 @@ def main():
     if args.debug:
         plot_districts(gdf, initial, st.name, scode, output_filename=f"debug_1_initial_{scode}.png")
         print_debug_stats("Initial Assignment", initial, gdf, G)
+
     logging.info("Starting Stage 1: Contiguity Repair...")
     contiguous_map = fix_contiguity(initial, gdf, G)
     if args.debug:
         plot_districts(gdf, contiguous_map, st.name, scode, output_filename=f"debug_2_contiguous_{scode}.png")
         print_debug_stats("Contiguity Repair", contiguous_map, gdf, G)
+
     logging.info("Starting Stage 2: Powerful Balancing...")
     balanced_map = powerful_balancer(
         contiguous_map, gdf, G, ideal_pop,
@@ -117,16 +120,24 @@ def main():
     if args.debug:
         plot_districts(gdf, balanced_map, st.name, scode, output_filename=f"debug_3_balanced_{scode}.png")
         print_debug_stats("Powerful Balancing", balanced_map, gdf, G)
+
     logging.info("Starting Stage 3: Final Perfecting...")
+    # --- THE FIX ---
+    # Update the function call to pass the new arguments needed for the intermediate debug step
     final_map, final_score = perfect_map(
         balanced_map, gdf, G, ideal_pop,
         pop_tolerance_ratio=settings.defaults.pop_tolerance_ratio,
-        compactness_threshold=settings.defaults.compactness_threshold
+        st=st,
+        scode=scode,
+        debug=args.debug
     )
+    # --- END FIX ---
+    
     final_sorted = [sorted(list(d)) for d in final_map]
     final_sorted.sort()
     plot_districts(gdf, final_sorted, st.name, scode, output_filename=f"districts_{scode}.png")
     final_pop_counts = [sum(G.nodes[b]["pop"] for b in d) for d in final_sorted]
+    
     print("\n" + "=" * 50)
     print(f"Final District Map for {st.name} ({D} districts)")
     print("=" * 50)
@@ -137,6 +148,7 @@ def main():
         )
     print(f"\nTotal Population: {total_pop:,}")
     print(f"Final Score: {final_score:.2f}")
+    
     out = {
         "state_code": scode, "districts": final_sorted, "score": final_score,
         "total_population": total_pop, "ideal_population": ideal_pop,
