@@ -12,24 +12,45 @@ def plot_districts(
     output_filename: str | None = None
 ):
     """
-    Generate and save a color-coded district map PNG.
-    If output_filename is provided, it's used; otherwise, a default is created.
+    Generate and save a color-coded and labeled district map PNG.
     """
     logging.info(f"Generating district map visualization...")
     gdf = gdf.copy()
     gdf["district"] = -1
     for i, d in enumerate(final_districts):
-        # Ensure d is a list or set of GEOID20s before using .isin
         district_blocks = list(d)
         gdf.loc[gdf["GEOID20"].isin(district_blocks), "district"] = i + 1
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    gdf.plot(column="district", cmap="tab20", ax=ax, legend=True)
+    gdf.plot(column="district", cmap="tab20", ax=ax, legend=True, categorical=True)
     
-    # Determine the title and filename
+    # --- NEW LABELING LOGIC ---
+    # Calculate the center of each district and add a text label
+    for i in range(1, len(final_districts) + 1):
+        district_gdf = gdf[gdf["district"] == i]
+        if not district_gdf.empty:
+            # Calculate the centroid of the union of all blocks in the district
+            centroid = district_gdf.geometry.unary_union.centroid
+            # Add the district number as a text label
+            ax.text(
+                centroid.x, 
+                centroid.y, 
+                str(i), 
+                fontsize=12, 
+                fontweight='bold',
+                ha='center', 
+                va='center',
+                color='white',
+                # Add a black outline to the text for better visibility
+                path_effects=[
+                    plt.matplotlib.patheffects.withStroke(linewidth=2, foreground='black')
+                ]
+            )
+    # --- END NEW LABELING LOGIC ---
+
     if "debug" in (output_filename or ""):
         try:
-            phase_name = output_filename.split('_')[1].capitalize()
+            phase_name = output_filename.split('_')[2].capitalize()
             plt.title(f"District Map for {state_name} (After {phase_name})")
         except IndexError:
             plt.title(f"Debug District Map for {state_name}")
