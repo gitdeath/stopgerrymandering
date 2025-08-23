@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import matplotlib.pyplot as plt
+# --- THE FIX (Step 1): Add the required import ---
+import matplotlib.patheffects as path_effects
 
 
 def plot_districts(
@@ -24,14 +26,11 @@ def plot_districts(
     fig, ax = plt.subplots(figsize=(10, 10))
     gdf.plot(column="district", cmap="tab20", ax=ax, legend=True, categorical=True)
     
-    # --- NEW LABELING LOGIC ---
     # Calculate the center of each district and add a text label
     for i in range(1, len(final_districts) + 1):
         district_gdf = gdf[gdf["district"] == i]
         if not district_gdf.empty:
-            # Calculate the centroid of the union of all blocks in the district
             centroid = district_gdf.geometry.unary_union.centroid
-            # Add the district number as a text label
             ax.text(
                 centroid.x, 
                 centroid.y, 
@@ -41,15 +40,15 @@ def plot_districts(
                 ha='center', 
                 va='center',
                 color='white',
-                # Add a black outline to the text for better visibility
+                # --- THE FIX (Step 2): Correct the function call ---
                 path_effects=[
-                    plt.matplotlib.patheffects.withStroke(linewidth=2, foreground='black')
+                    path_effects.withStroke(linewidth=2, foreground='black')
                 ]
             )
-    # --- END NEW LABELING LOGIC ---
 
     if "debug" in (output_filename or ""):
         try:
+            # Adjusted split for new debug filenames like "debug_1_initial_MO.png"
             phase_name = output_filename.split('_')[2].capitalize()
             plt.title(f"District Map for {state_name} (After {phase_name})")
         except IndexError:
