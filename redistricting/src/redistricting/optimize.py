@@ -227,4 +227,65 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, de
                         current[from_idx].remove(block)
                         current[to_idx].add(block)
                         move_made_this_pass = True
-                        logging.debug(f"  - Fast Pass move applied: D{from_idx+1} ->
+                        logging.debug(f"  - Fast Pass move applied: D{from_idx+1} -> D{to_idx+1}.")
+                        break 
+            
+            if move_made_this_pass:
+                break 
+        
+        if not move_made_this_pass:
+            logging.info(f"Fast Pass: A full pass on all imbalanced districts found no improving moves. Concluding.")
+            break
+            
+    if debug:
+        plot_districts(gdf, current, st.name, scode, output_filename=f"debug_3b_fastpass_{scode}.png")
+        print_debug_stats("Fast Pass Balancing", current, gdf, G)
+
+    # --- PASS 2: PARALLELIZED SLOW SHAPE POLISHING ---
+    logging.info("Perfecting Pass 2: Running parallelized, full hybrid-score optimization...")
+    
+    MAX_SLOW_PASS_ITERATIONS = 30
+    for iteration in range(1, MAX_SLOW_PASS_ITERATIONS + 1):
+        current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
+        logging.info(f"Slow Pass Iteration {iteration}: Starting score {current_score:.2f}")
+
+        membership = {b: i for i, d in enumerate(current) for b in d}
+        all_border_blocks = list({b for d in current for b in d if any(membership.get(n) is not None and membership.get(n) != membership[b] for n in G.neighbors(b))})
+
+        SAMPLE_SIZE = 500
+        blocks_to_check = random.sample(all_border_blocks, min(len(all_border_blocks), SAMPLE_SIZE))
+        
+        logging.debug(f"  - Distributing analysis of {len(blocks_to_check)} blocks across CPU cores...")
+
+        task = partial(
+            _evaluate_move_worker, 
+            current_districts=current,
+            membership=membership, 
+            G=G, 
+            gdf=gdf, 
+            ideal_pop=ideal_pop, 
+            pop_tolerance_ratio=pop_tolerance_ratio,
+        )
+
+        best_move = None
+        best_delta = 0.0
+        
+        with multiprocessing.Pool() as pool:
+            results = pool.map(task, blocks_to_check)
+
+        for move, delta in results:
+            if delta > best_delta:
+                best_delta = delta
+                best_move = move
+        
+        if best_move:
+            b, fidx, tidx = best_move
+            current[fidx].remove(b)
+            current[tidx].add(b)
+            logging.info(f"  - Applied best move. New hybrid score: {current_score - best_delta:.2f}")
+        else:
+            logging.info("Slow Pass: No further shape improvements found.")
+            break
+            
+    logging.info("Final perfecting complete.")
+    return [list(d) for d in current], objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
