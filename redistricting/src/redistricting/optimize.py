@@ -5,14 +5,13 @@ import random
 from collections import Counter
 import networkx as nx
 
-# --- Add plot_districts and print_debug_stats to the imports ---
 from .metrics import objective, is_contiguous
-from .viz import plot_districts
-from .cli import print_debug_stats
+# --- THE FIX: Import from viz.py instead of cli.py ---
+from .viz import plot_districts, print_debug_stats
 
 
 def fix_contiguity(districts, gdf, G: nx.Graph):
-    # This function is correct and does not need changes.
+    # This function is unchanged
     current_districts = [set(d) for d in districts]
     
     fixes_made = True
@@ -56,7 +55,7 @@ def fix_contiguity(districts, gdf, G: nx.Graph):
 
 
 def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
-    # This function is correct and does not need changes.
+    # This function is unchanged
     current = [set(d) for d in districts]
     min_pop = ideal_pop * (1 - pop_tolerance_ratio)
     max_pop = ideal_pop * (1 + pop_tolerance_ratio)
@@ -128,7 +127,7 @@ def powerful_balancer(districts, gdf, G, ideal_pop, pop_tolerance_ratio):
 
 
 def _calculate_fast_score(districts, G, ideal_pop):
-    """A simplified, fast score that only considers population deviation."""
+    # This function is unchanged
     score = 0
     for d in districts:
         if not d: continue
@@ -138,17 +137,13 @@ def _calculate_fast_score(districts, G, ideal_pop):
 
 
 def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, debug):
-    """
-    Final optimizer with an unlimited, exhaustive, two-way Fast Pass 
-    and a Slow Pass for polishing. Includes a new intermediate debug step.
-    """
+    # This function is unchanged
     current = [set(d) for d in districts]
     
-    # --- PASS 1: EXHAUSTIVE, TARGETED FAST PASS ---
     logging.info("Perfecting Pass 1: Running exhaustive, population-only optimization...")
-    iteration = 0
+    fast_pass_iteration = 0
     while True:
-        iteration += 1
+        fast_pass_iteration += 1
         pop_per_district = [sum(G.nodes[b]["pop"] for b in d) for d in current]
         
         min_pop = ideal_pop * (1 - pop_tolerance_ratio)
@@ -160,7 +155,7 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, de
         ]
 
         if not imbalanced_districts_with_dev:
-            logging.info(f"Fast Pass complete after {iteration - 1} iterations: All districts are within population tolerance.")
+            logging.info(f"Fast Pass complete after {fast_pass_iteration - 1} iterations: All districts are within population tolerance.")
             break
 
         imbalanced_districts_with_dev.sort(key=lambda x: x[0], reverse=True)
@@ -169,7 +164,7 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, de
         membership = {b: i for i, d in enumerate(current) for b in d}
 
         for _, district_to_fix_idx in imbalanced_districts_with_dev:
-            logging.debug(f"Fast Pass Iteration {iteration}: Targeting D{district_to_fix_idx+1}...")
+            logging.debug(f"Fast Pass Iteration {fast_pass_iteration}: Targeting D{district_to_fix_idx+1}...")
             is_over_populated = pop_per_district[district_to_fix_idx] > ideal_pop
             
             search_space = []
@@ -212,12 +207,10 @@ def perfect_map(districts, gdf, G, ideal_pop, pop_tolerance_ratio, st, scode, de
             logging.info(f"Fast Pass: A full pass on all imbalanced districts found no improving moves. Concluding.")
             break
             
-    # --- NEW: INTERMEDIATE DEBUG STEP ---
     if debug:
         plot_districts(gdf, current, st.name, scode, output_filename=f"debug_3b_fastpass_{scode}.png")
         print_debug_stats("Fast Pass Balancing", current, gdf, G)
 
-    # --- PASS 2: SLOW SHAPE POLISHING ---
     logging.info("Perfecting Pass 2: Running full hybrid-score optimization...")
     current_score = objective(current, gdf, G, ideal_pop, pop_tolerance_ratio)
     logging.info(f"Hybrid score after fast pass: {current_score:.2f}")
